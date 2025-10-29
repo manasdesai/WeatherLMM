@@ -217,10 +217,10 @@ def main():
     # Step 1: Load NetCDF and convert to image
     print("Step 1: Loading NetCDF file and generating weather chart...")
     weather_image, metadata = load_netcdf_as_image(SAMPLE_FILE)
-    print(f"  ✓ Loaded: {metadata['file']}")
-    print(f"  ✓ Valid time: {metadata['time']}")
-    print(f"  ✓ Temperature range: {metadata['temp_min']:.1f}°C to {metadata['temp_max']:.1f}°C")
-    print(f"  ✓ Mean temperature: {metadata['temp_mean']:.1f}°C")
+    print(f"Loaded: {metadata['file']}")
+    print(f"Valid time: {metadata['time']}")
+    print(f"Temperature range: {metadata['temp_min']:.1f}°C to {metadata['temp_max']:.1f}°C")
+    print(f"Mean temperature: {metadata['temp_mean']:.1f}°C")
     print()
 
     # Optionally save the image for inspection
