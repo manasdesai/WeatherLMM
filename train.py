@@ -33,6 +33,11 @@ import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 
 from transformers import AutoModelForVision2Seq, AutoProcessor
+try:
+    # Optional imports for QLoRA / bitsandbytes pathway
+    from transformers import BitsAndBytesConfig
+except Exception:
+    BitsAndBytesConfig = None
 
 from weather_utils import netcdf_to_image
 from PIL import Image
@@ -72,7 +77,7 @@ class WrappedLMHead(nn.Module):
 class WeatherDataset(Dataset):
     """Simple dataset backed by a CSV manifest.
 
-    Each row: nc_path,prompt,target_text
+    Each row: nc_path,target_text
     nc_path may also be an image path (png/jpg) if you pre-exported charts.
     """
 
@@ -91,7 +96,6 @@ class WeatherDataset(Dataset):
     def __getitem__(self, idx):
         rec = self.records[idx]
         path = rec.get('nc_path') or rec.get('image')
-        prompt = rec.get('prompt', '')
         target = rec.get('target_text', '')
 
         # Load image: try to treat path as NetCDF first, fall back to image file
@@ -100,28 +104,32 @@ class WeatherDataset(Dataset):
         except Exception:
             image = Image.open(path).convert('RGB')
 
-        return image, prompt, target
+        return image, target
 
 
-def collate_fn(batch: List[Tuple[Image.Image, str, str]], processor: AutoProcessor, device: torch.device):
-    images, prompts, targets = zip(*batch)
+def collate_fn(batch: List[Tuple[Image.Image, str]], processor: AutoProcessor, device: torch.device):
+    images, targets = zip(*batch)
 
-    # Prepare messages that match the processor's expected chat template
+    # Use a fixed internal prompt (not stored in manifest). The user requested
+    # that the manifest not include prompts; the model will still receive a
+    # small generation instruction identical for all examples.
+    INTERNAL_PROMPT = (
+        "You are a meteorologist. Provide a concise, professional forecast based on the provided chart."
+    )
+
     messages = []
-    for img, p, t in zip(images, prompts, targets):
+    for img in images:
         messages.append({
             'role': 'user',
             'content': [
                 {'type': 'image', 'image': img},
-                {'type': 'text', 'text': p},
+                {'type': 'text', 'text': INTERNAL_PROMPT},
             ],
         })
 
-    # The processor used in qwen_inference expects apply_chat_template; we will
-    # use it to produce the input text and also pass text_target to get labels.
     texts = [processor.apply_chat_template([m], tokenize=False, add_generation_prompt=True) for m in messages]
 
-    # `text_target` is a common name for target texts in HF processors; use if supported.
+    # Try to let the processor accept text_target directly; fallback if not.
     try:
         model_inputs = processor(
             text=texts,
@@ -131,7 +139,6 @@ def collate_fn(batch: List[Tuple[Image.Image, str, str]], processor: AutoProcess
             return_tensors='pt'
         )
     except TypeError:
-        # Fallback: encode prompts as input and encode targets separately
         model_inputs = processor(
             text=texts,
             images=list(images),
@@ -140,10 +147,8 @@ def collate_fn(batch: List[Tuple[Image.Image, str, str]], processor: AutoProcess
         )
         with processor.as_target_processor():
             labels = processor(text=list(targets), padding=True, return_tensors='pt')
-            # labels.key: input_ids or input_ids
             model_inputs['labels'] = labels['input_ids']
 
-    # Move tensors to device
     for k, v in list(model_inputs.items()):
         if isinstance(v, torch.Tensor):
             model_inputs[k] = v.to(device)
@@ -166,42 +171,103 @@ def main():
     parser.add_argument('--batch_size', type=int, default=2)
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--adapter_dim', type=int, default=256)
+    # QLoRA / LoRA options
+    parser.add_argument('--use_qlora', action='store_true', help='Use QLoRA (bitsandbytes + PEFT) for fine-tuning')
+    parser.add_argument('--lora_r', type=int, default=8, help='LoRA rank')
+    parser.add_argument('--lora_alpha', type=int, default=16, help='LoRA alpha')
+    parser.add_argument('--lora_dropout', type=float, default=0.05, help='LoRA dropout')
+    parser.add_argument('--lora_target_modules', type=str, default='q_proj,k_proj,v_proj,o_proj',
+                        help='Comma-separated list of target modules for LoRA')
     args = parser.parse_args()
 
     device = torch.device(args.device)
 
     print(f'Loading model {args.model} on {device}...')
-    model = AutoModelForVision2Seq.from_pretrained(args.model, trust_remote_code=True)
-    processor = AutoProcessor.from_pretrained(args.model, trust_remote_code=True)
 
-    # Freeze backbone
-    freeze_backbone(model)
+    model = None
+    processor = None
 
-    # Build adapter and wrap lm_head
-    hidden_size = getattr(model.config, 'd_model', None) or getattr(model.config, 'hidden_size', None)
-    if hidden_size is None:
-        # fallback: try to inspect lm_head weight
+    # QLoRA / PEFT branch
+    if args.use_qlora:
+        if args.device == 'cpu':
+            raise RuntimeError('QLoRA requires a GPU device. Set --device cuda')
+
+        if BitsAndBytesConfig is None:
+            raise ImportError('BitsAndBytes support not available. Install recent transformers and bitsandbytes.')
+
+        # Load model in 4-bit via BitsAndBytesConfig
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=torch.float16,
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_quant_type='nf4'
+        )
+
+        model = AutoModelForVision2Seq.from_pretrained(
+            args.model,
+            quantization_config=bnb_config,
+            device_map='auto',
+            trust_remote_code=True,
+        )
+        processor = AutoProcessor.from_pretrained(args.model, trust_remote_code=True)
+
         try:
-            lm = model.get_output_embeddings()
-            hidden_size = lm.in_features
-        except Exception:
-            raise RuntimeError('Unable to infer model hidden size for adapter. Please set manually in code.')
+            from peft import prepare_model_for_kbit_training, LoraConfig, get_peft_model
+        except Exception as e:
+            raise ImportError('PEFT not installed. Install `peft` and `bitsandbytes` to use --use_qlora') from e
 
-    adapter = Adapter(hidden_size=hidden_size, adapter_dim=args.adapter_dim)
+        model = prepare_model_for_kbit_training(model)
 
-    # Wrap output embeddings
-    orig_lm = model.get_output_embeddings()
-    wrapped_lm = WrappedLMHead(orig_lm, adapter)
-    model.set_output_embeddings(wrapped_lm)
+        target_modules = [m.strip() for m in args.lora_target_modules.split(',') if m.strip()]
+        lora_config = LoraConfig(
+            r=args.lora_r,
+            lora_alpha=args.lora_alpha,
+            target_modules=target_modules,
+            lora_dropout=args.lora_dropout,
+            bias='none',
+            task_type='SEQ_2_SEQ_LM',
+        )
 
-    # Move trainable parameters (adapter + wrapped lm params) to device
-    model.to(device)
+        model = get_peft_model(model, lora_config)
 
-    # Optimizer: only adapter & wrapped_lm parameters are trainable
-    trainable_params = [p for p in model.parameters() if p.requires_grad]
-    print(f'Number of trainable parameters: {sum(x.numel() for x in trainable_params)}')
+        # When using device_map='auto' the model is already on devices; do not call .to(device)
+        trainable_params = [p for p in model.parameters() if p.requires_grad]
+        print(f'Number of trainable parameters (LoRA): {sum(x.numel() for x in trainable_params)}')
+        optimizer = torch.optim.AdamW(trainable_params, lr=args.lr)
 
-    optimizer = torch.optim.AdamW(trainable_params, lr=args.lr)
+    else:
+        # Adapter-based fine-tuning (default)
+        model = AutoModelForVision2Seq.from_pretrained(args.model, trust_remote_code=True)
+        processor = AutoProcessor.from_pretrained(args.model, trust_remote_code=True)
+
+        # Freeze backbone
+        freeze_backbone(model)
+
+        # Build adapter and wrap lm_head
+        hidden_size = getattr(model.config, 'd_model', None) or getattr(model.config, 'hidden_size', None)
+        if hidden_size is None:
+            # fallback: try to inspect lm_head weight
+            try:
+                lm = model.get_output_embeddings()
+                hidden_size = lm.in_features
+            except Exception:
+                raise RuntimeError('Unable to infer model hidden size for adapter. Please set manually in code.')
+
+        adapter = Adapter(hidden_size=hidden_size, adapter_dim=args.adapter_dim)
+
+        # Wrap output embeddings
+        orig_lm = model.get_output_embeddings()
+        wrapped_lm = WrappedLMHead(orig_lm, adapter)
+        model.set_output_embeddings(wrapped_lm)
+
+        # Move trainable parameters (adapter + wrapped lm params) to device
+        model.to(device)
+
+        # Optimizer: only adapter & wrapped_lm parameters are trainable
+        trainable_params = [p for p in model.parameters() if p.requires_grad]
+        print(f'Number of trainable parameters: {sum(x.numel() for x in trainable_params)}')
+
+        optimizer = torch.optim.AdamW(trainable_params, lr=args.lr)
 
     # Dataset and dataloader
     dataset = WeatherDataset(args.manifest)
@@ -241,10 +307,22 @@ def main():
         epoch_loss = total_loss / (step + 1)
         print(f'Epoch {epoch+1} completed, avg loss={epoch_loss:.4f}')
 
-        # Save adapter checkpoint
-        adapter_path = output_dir / f'adapter_epoch{epoch+1}.pt'
-        torch.save({'adapter_state_dict': adapter.state_dict()}, adapter_path)
-        print(f'  Saved adapter checkpoint: {adapter_path}')
+        # Save checkpoint for the chosen fine-tuning method
+        if args.use_qlora:
+            peft_dir = output_dir / f'peft_epoch{epoch+1}'
+            peft_dir.mkdir(parents=True, exist_ok=True)
+            # PEFT models provide a `save_pretrained` helper
+            try:
+                model.save_pretrained(str(peft_dir))
+                print(f'  Saved PEFT adapter to: {peft_dir}')
+            except Exception:
+                # Fallback: save state_dict
+                torch.save({'state_dict': model.state_dict()}, peft_dir / 'state_dict.pt')
+                print(f'  Saved PEFT state_dict to: {peft_dir / "state_dict.pt"}')
+        else:
+            adapter_path = output_dir / f'adapter_epoch{epoch+1}.pt'
+            torch.save({'adapter_state_dict': adapter.state_dict()}, adapter_path)
+            print(f'  Saved adapter checkpoint: {adapter_path}')
 
     print('Training finished')
 
