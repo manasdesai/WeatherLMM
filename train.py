@@ -22,9 +22,11 @@ adapter strategy that is easy to run on CPU/GPU and safe to start with.
 
 """
 
+import os
+os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
+
 import argparse
 import csv
-import os
 from pathlib import Path
 from typing import List, Tuple
 
@@ -117,37 +119,50 @@ def collate_fn(batch: List[Tuple[Image.Image, str]], processor: AutoProcessor, d
         "You are a meteorologist. Provide a concise, professional forecast based on the provided chart."
     )
 
-    messages = []
-    for img in images:
-        messages.append({
-            'role': 'user',
-            'content': [
-                {'type': 'image', 'image': img},
-                {'type': 'text', 'text': INTERNAL_PROMPT},
-            ],
-        })
+    # Build conversation with both user prompt and assistant response for training
+    conversations = []
+    for img, target in zip(images, targets):
+        conversations.append([
+            {
+                'role': 'user',
+                'content': [
+                    {'type': 'image', 'image': img},
+                    {'type': 'text', 'text': INTERNAL_PROMPT},
+                ],
+            },
+            {
+                'role': 'assistant',
+                'content': [
+                    {'type': 'text', 'text': target},
+                ],
+            }
+        ])
 
-    texts = [processor.apply_chat_template([m], tokenize=False, add_generation_prompt=True) for m in messages]
+    # Apply chat template to get full text including response
+    texts = [processor.apply_chat_template(conv, tokenize=False) for conv in conversations]
 
-    # Try to let the processor accept text_target directly; fallback if not.
-    try:
-        model_inputs = processor(
-            text=texts,
-            images=list(images),
-            text_target=list(targets),
-            padding=True,
-            return_tensors='pt'
-        )
-    except TypeError:
-        model_inputs = processor(
-            text=texts,
-            images=list(images),
-            padding=True,
-            return_tensors='pt'
-        )
-        with processor.as_target_processor():
-            labels = processor(text=list(targets), padding=True, return_tensors='pt')
-            model_inputs['labels'] = labels['input_ids']
+    # Process images and text together
+    model_inputs = processor(
+        text=texts,
+        images=list(images),
+        padding=True,
+        return_tensors='pt'
+    )
+
+    # For causal LM training, labels are the same as input_ids
+    # The model will internally shift them for next-token prediction
+    model_inputs['labels'] = model_inputs['input_ids'].clone()
+
+    # Mask out the prompt tokens so loss is only computed on the assistant response
+    # This requires finding where the assistant response starts in each sequence
+    for idx, conv in enumerate(conversations):
+        # Get the prompt-only text (without assistant response)
+        prompt_text = processor.apply_chat_template([conv[0]], tokenize=False, add_generation_prompt=True)
+        prompt_tokens = processor(text=prompt_text, images=[images[idx]], return_tensors='pt')
+        prompt_length = prompt_tokens['input_ids'].shape[1]
+
+        # Mask prompt tokens in labels (set to -100 so they're ignored in loss)
+        model_inputs['labels'][idx, :prompt_length] = -100
 
     for k, v in list(model_inputs.items()):
         if isinstance(v, torch.Tensor):
@@ -278,8 +293,13 @@ def main():
 
     model.train()
 
+    print(f'\nStarting training with {len(dataset)} examples...')
+    print(f'Batch size: {args.batch_size}, Total batches per epoch: {len(dataloader)}\n')
+
     for epoch in range(args.epochs):
+        print(f'{"="*60}')
         print(f'Epoch {epoch+1}/{args.epochs}')
+        print(f'{"="*60}')
         total_loss = 0.0
         for step, batch in enumerate(dataloader):
             # batch is a dict already moved to device and may contain pixel_values and input_ids and labels
@@ -301,11 +321,14 @@ def main():
 
             total_loss += loss.item()
             if (step + 1) % 10 == 0:
-                avg = total_loss / (step + 1)
-                print(f'  step {step+1} loss={avg:.4f}')
+                avg_loss = total_loss / (step + 1)
+                current_loss = loss.item()
+                print(f'  Step {step+1}/{len(dataloader)} | Current loss: {current_loss:.4f} | Avg loss: {avg_loss:.4f}')
 
         epoch_loss = total_loss / (step + 1)
-        print(f'Epoch {epoch+1} completed, avg loss={epoch_loss:.4f}')
+        print(f'\n{"="*60}')
+        print(f'Epoch {epoch+1} completed | Average loss: {epoch_loss:.4f}')
+        print(f'{"="*60}\n')
 
         # Save checkpoint for the chosen fine-tuning method
         if args.use_qlora:
