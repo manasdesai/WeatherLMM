@@ -10,6 +10,7 @@ import os
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 
 import torch
+import torch.nn as nn
 from transformers import AutoModelForVision2Seq, AutoProcessor
 from qwen_vl_utils import process_vision_info
 from PIL import Image
@@ -23,16 +24,48 @@ from pathlib import Path
 import io
 
 
+class Adapter(nn.Module):
+    """Small residual adapter applied to decoder hidden states.
+
+    Must match the architecture used in train.py
+    """
+
+    def __init__(self, hidden_size: int, adapter_dim: int = 256):
+        super().__init__()
+        self.down = nn.Linear(hidden_size, adapter_dim)
+        self.act = nn.GELU()
+        self.up = nn.Linear(adapter_dim, hidden_size)
+
+    def forward(self, hidden: torch.Tensor) -> torch.Tensor:
+        return self.up(self.act(self.down(hidden)))
+
+
+class WrappedLMHead(nn.Module):
+    """Wrap original lm_head and apply adapter to hidden states before projection."""
+
+    def __init__(self, orig_lm_head: nn.Module, adapter: Adapter):
+        super().__init__()
+        self.orig = orig_lm_head
+        self.adapter = adapter
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        adapted = hidden_states + self.adapter(hidden_states)
+        return self.orig(adapted)
+
+
 class WeatherForecastInference:
     """Inference wrapper for Qwen2.5-VL on weather forecast images."""
 
-    def __init__(self, model_name="Qwen/Qwen2.5-VL-3B-Instruct", device="cuda"):
+    def __init__(self, model_name="Qwen/Qwen2.5-VL-3B-Instruct", device="cuda",
+                 adapter_checkpoint=None, adapter_dim=256):
         """
         Initialize the Qwen2.5-VL model for inference.
 
         Args:
             model_name: HuggingFace model identifier
             device: Device to run inference on ('cuda' or 'cpu')
+            adapter_checkpoint: Path to trained adapter checkpoint (.pt file)
+            adapter_dim: Adapter dimension (must match training, default 256)
         """
         print(f"Loading {model_name}...")
 
@@ -50,27 +83,61 @@ class WeatherForecastInference:
         )
         self.device = device
 
+        # Load trained adapter if checkpoint provided
+        if adapter_checkpoint:
+            print(f"Loading trained adapter from {adapter_checkpoint}...")
+
+            # Get hidden size from model config
+            hidden_size = getattr(self.model.config, 'd_model', None) or \
+                         getattr(self.model.config, 'hidden_size', None)
+            if hidden_size is None:
+                lm = self.model.get_output_embeddings()
+                hidden_size = lm.in_features
+
+            # Build adapter with same architecture as training
+            adapter = Adapter(hidden_size=hidden_size, adapter_dim=adapter_dim)
+
+            # Load trained adapter weights BEFORE wrapping
+            checkpoint = torch.load(adapter_checkpoint, map_location=device)
+            adapter.load_state_dict(checkpoint['adapter_state_dict'])
+
+            # Move adapter to the correct device and dtype
+            model_dtype = next(self.model.parameters()).dtype
+            adapter = adapter.to(device=device, dtype=model_dtype)
+
+            # Wrap output embeddings
+            orig_lm = self.model.get_output_embeddings()
+            wrapped_lm = WrappedLMHead(orig_lm, adapter)
+            self.model.set_output_embeddings(wrapped_lm)
+
+            print(f"✓ Loaded trained adapter with {adapter_dim} dimensions")
+
         print(f"Model loaded successfully on {device}")
 
-    def generate_forecast(self, image, prompt=None, max_new_tokens=512):
+    def generate_forecast(self, image, prompt=None, max_new_tokens=2048, use_training_prompt=True):
         """
         Generate a text forecast from a weather chart image.
 
         Args:
             image: PIL Image or path to image file
-            prompt: Custom prompt (default: weather forecast prompt)
+            prompt: Custom prompt (overrides default)
             max_new_tokens: Maximum length of generated text
+            use_training_prompt: Use the same prompt format as training (recommended for fine-tuned models)
 
         Returns:
             Generated forecast text
         """
         if prompt is None:
-            prompt = (
-                "You are a meteorologist analyzing a weather forecast chart. "
-                "Describe the temperature patterns, geographic distribution, "
-                "and any notable weather features visible in this 2-meter temperature forecast map. "
-                "Provide a clear, professional weather forecast based on this data."
-            )
+            if use_training_prompt:
+                # Use the EXACT same prompt as training for best results with fine-tuned adapter
+                prompt = "You are a meteorologist. Provide a concise, professional forecast based on the provided chart."
+            else:
+                prompt = (
+                    "You are a meteorologist analyzing a weather forecast chart. "
+                    "Describe the temperature patterns, geographic distribution, "
+                    "and any notable weather features visible in this 2-meter temperature forecast map. "
+                    "Provide a clear, professional weather forecast based on this data."
+                )
 
         # Prepare the conversation format Qwen2.5-VL expects
         messages = [
@@ -197,20 +264,37 @@ def load_netcdf_as_image(nc_file_path, figsize=(10, 6), dpi=150):
 
 
 def main():
-    """Demo script showing Qwen2.5-VL inference on weather data."""
+    """Demo script showing Qwen2.5-VL inference on weather data with trained adapter."""
+    import argparse
+
+    parser = argparse.ArgumentParser(description='Weather forecast inference with fine-tuned Qwen2.5-VL')
+    parser.add_argument('--checkpoint', type=str, default=None,
+                       help='Path to trained adapter checkpoint (e.g., ./checkpoints/adapter_epoch2.pt)')
+    parser.add_argument('--image', type=str, default=None,
+                       help='Path to NetCDF file or image to run inference on')
+    parser.add_argument('--adapter_dim', type=int, default=256,
+                       help='Adapter dimension (must match training)')
+    args = parser.parse_args()
 
     # Configuration
-    DATA_DIR = Path(r"C:\Users\Daniel\Downloads\forecast_2t_12hr_2016_2024-20251026T174311Z-1-001\forecast_2t_12hr_2016_2024\2019\01")
-    SAMPLE_FILE = DATA_DIR / "ifs_fc_2t_0000_12_20190101.nc"
+    if args.image:
+        SAMPLE_FILE = Path(args.image)
+    else:
+        DATA_DIR = Path(r"C:\Users\Daniel\Downloads\forecast_2t_12hr_2016_2024-20251026T174311Z-1-001\forecast_2t_12hr_2016_2024\2019\01")
+        SAMPLE_FILE = DATA_DIR / "ifs_fc_2t_0000_12_20190101.nc"
 
     # Check if sample file exists
     if not SAMPLE_FILE.exists():
         print(f"Error: Sample file not found at {SAMPLE_FILE}")
-        print("Please update DATA_DIR and SAMPLE_FILE paths in the script.")
+        print("Please update the file path or use --image argument.")
         return
 
     print("="*80)
-    print("Qwen2.5-VL Weather Forecast Inference Demo")
+    print("Qwen2.5-VL Weather Forecast Inference")
+    if args.checkpoint:
+        print(f"WITH TRAINED ADAPTER: {args.checkpoint}")
+    else:
+        print("(Base model only - no adapter)")
     print("="*80)
     print()
 
@@ -237,41 +321,29 @@ def main():
     if device == "cpu":
         print("  ⚠ Warning: Running on CPU. Inference will be slower.")
 
-    inference = WeatherForecastInference(device=device)
+    inference = WeatherForecastInference(
+        device=device,
+        adapter_checkpoint=args.checkpoint,
+        adapter_dim=args.adapter_dim
+    )
     print()
 
     # Step 3: Generate forecast
     print("Step 3: Generating forecast from weather chart...")
+    if args.checkpoint:
+        print("Using fine-tuned adapter with training prompt format")
     print("-" * 80)
 
     forecast_text = inference.generate_forecast(weather_image)
 
-    print("GENERATED FORECAST:")
+    print("\nGENERATED FORECAST:")
+    print("-" * 80)
     print(forecast_text)
     print("-" * 80)
     print()
 
-    # Step 4: Try with a custom prompt
-    print("Step 4: Testing with custom prompt...")
-    custom_prompt = (
-        "Analyze this temperature forecast map and provide: "
-        "1) The warmest and coldest regions, "
-        "2) Overall temperature gradient patterns, "
-        "3) A brief forecast summary."
-    )
-
-    print(f"Custom prompt: {custom_prompt}")
-    print("-" * 80)
-
-    custom_forecast = inference.generate_forecast(weather_image, prompt=custom_prompt)
-
-    print("GENERATED FORECAST (Custom Prompt):")
-    print(custom_forecast)
-    print("-" * 80)
-    print()
-
     print("="*80)
-    print("Demo completed successfully!")
+    print("Inference completed successfully!")
     print("="*80)
 
 
