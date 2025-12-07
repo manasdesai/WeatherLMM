@@ -1,0 +1,29 @@
+#!/bin/bash
+#PBS -N fc_img
+#PBS -A XXXXX
+#PBS -j oe
+#PBS -k eod
+#PBS -q main
+#PBS -l select=1:ncpus=24:mem=256gb
+#PBS -l walltime=12:00:00
+#PBS -m abe
+#PBS -M dcalhoun@umd.edu
+
+# Load necessary modules
+module purge
+module load ncarenv-basic/25.10
+module load conda
+module load intel/2025.2.1
+module load openmpi/5.0.8
+
+# Activate your Conda environment
+conda activate cmsc723
+
+# Change to the directory from which the job was submitted
+cd $PBS_O_WORKDIR
+
+python -u fc_img.py \
+  --start 20160101 \
+  --end 20251122 \
+  --init_times 0000,1200 \
+  --lead_time 12
