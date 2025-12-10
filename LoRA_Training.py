@@ -89,6 +89,17 @@ class WeatherDataCollectorImageText:
                             "temperature and wind, thickness and mean sea level pressure,"
                             "and lastely wind and relative humidity at various pressure levels),"
                             "describe the expected weather in detail."
+                            
+                            # Dean's suggested prompt:
+                            
+                            # "You are a skilled weather forecasting system operating on behalf of the National
+                            # Weather Service’s Weather Prediction Center. Given this set of numerical weather prediction
+                            # model output images for a +12 hour forecast, produce a short-range synoptic-scale
+                            # weather forecast for the continental United States over the next 1 to 2 days.
+                            # Your forecast will be relied upon by millions across the country, so it is critical
+                            # to be careful and accurate. Think deeply about each weather variable and their
+                            # relationships, recalling principles of quasi-geostrophic meteorology,
+                            # to ensure your forecast is physically consistent before generating your final answer.”
                         ),
                     },
                 ],
