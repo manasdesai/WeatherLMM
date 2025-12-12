@@ -215,6 +215,9 @@ def make_fc_img(date, init_time, lead_time, levels):
     for k in style_dict.keys():
         plot(k)
 
+    #cleaning up the style dictionary to free memory
+    style_dict.clear()
+
     # Explicit cleanup of Metview objects to release GRIB handles
     for obj in [
         t2m, u10, v10, wind10m, msl, thickness, z, t, u, v, wind, r 
