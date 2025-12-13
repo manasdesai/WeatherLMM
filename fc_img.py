@@ -8,7 +8,7 @@ import logging
 import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-def make_fc_img(date, init_time, lead_time, levels):
+def make_fc_img(date, init_time, lead_time, levels=[1000, 850, 700, 500, 200]):
     """
     Generate all ECMWF-style forecast images for a single date.
 
@@ -215,7 +215,7 @@ def make_fc_img(date, init_time, lead_time, levels):
     for k in style_dict.keys():
         plot(k)
 
-    #cleaning up the style dictionary to free memory
+    # Clean up the style dictionary to free memory
     style_dict.clear()
 
     # Explicit cleanup of Metview objects to release GRIB handles
@@ -238,17 +238,19 @@ def run_task(date, init_time, lead_time):
     proc = subprocess.run(cmd, capture_output=True)
     return proc.returncode, proc.stdout, proc.stderr
     
-def run_concurrent(start, end, init_times, lead_time, levels=[1000, 850, 700, 500, 200], num_workers=24):
+def run_concurrent(start, end, init_times, lead_time, num_workers=24):
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
         handlers=[logging.StreamHandler()]
     )
     dates = pd.date_range(start=start, end=end, freq='D')
+    futures = []
     with ThreadPoolExecutor(max_workers=24) as exc:
         for date in dates:
             for init_time in init_times:
-                futures = [exc.submit(run_task, date.strftime("%Y%m%d"), init_time, lead_time)]
+                logging.info(f"Running worker for {date} {init_time}")
+                futures.append(exc.submit(run_task, date.strftime("%Y%m%d"), init_time, lead_time))
         for f in as_completed(futures):
             ret, out, err = f.result()
 
