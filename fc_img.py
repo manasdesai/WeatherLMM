@@ -6,7 +6,8 @@ import gc
 import psutil
 import logging
 import subprocess
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 
 def make_fc_img(date, init_time, lead_time, levels=[1000, 850, 700, 500, 200]):
     """
@@ -233,6 +234,12 @@ def make_fc_img(date, init_time, lead_time, levels=[1000, 850, 700, 500, 200]):
     logging.info(f"Finished {year}-{month}-{day} {hour:02}UTC | RSS={proc.memory_info().rss/1e9:.2f} GB")
     return
 
+def daterange(start, end):
+    d = start
+    while d <= end:
+        yield d.strftime("%Y%m%d")
+        d += timedelta(days=1)
+
 def run_task(date, init_time, lead_time):
     cmd = ["python", "-u", "worker.py", "--date", date, "--init_time", init_time, "--lead_time", str(lead_time)]
     proc = subprocess.run(cmd, capture_output=True)
@@ -254,20 +261,45 @@ def run_concurrent(start, end, init_times, lead_time, num_workers=24):
         for f in as_completed(futures):
             ret, out, err = f.result()
 
+# def main():
+#     logging.basicConfig(
+#         level=logging.INFO,
+#         format="%(asctime)s [%(levelname)s] %(message)s",
+#         handlers=[logging.StreamHandler()]
+#     )
+#     parser = argparse.ArgumentParser()
+#     parser.add_argument('--start', required=True, help="start date YYYYMMDD")
+#     parser.add_argument('--end', required=True, help="end date YYYYMMDD")
+#     parser.add_argument('--init_times', required=True, help="HHHH[, ...]")
+#     parser.add_argument('--lead_time', required=True, help="lead hours as string or int")
+#     args = parser.parse_args()
+#     init_times = args.init_times.split(",")
+#     run_concurrent(args.start, args.end, init_times, args.lead_time)
+
 def main():
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(message)s",
-        handlers=[logging.StreamHandler()]
-    )
     parser = argparse.ArgumentParser()
-    parser.add_argument('--start', required=True, help="start date YYYYMMDD")
-    parser.add_argument('--end', required=True, help="end date YYYYMMDD")
-    parser.add_argument('--init_times', required=True, help="HHHH[, ...]")
-    parser.add_argument('--lead_time', required=True, help="lead hours as string or int")
+    parser.add_argument("--start", required=True)     # YYYYMMDD
+    parser.add_argument("--end", required=True)       # YYYYMMDD
+    parser.add_argument("--init-times", nargs="+", default=["0000", "1200"])
+    parser.add_argument("--lead-time", nargs="+", type=int, default=12)
+    parser.add_argument("--workers", type=int, default=24)
     args = parser.parse_args()
-    init_times = args.init_times.split(",")
-    run_concurrent(args.start, args.end, init_times, args.lead_time)
+
+    start = datetime.strptime(args.start, "%Y%m%d")
+    end   = datetime.strptime(args.end, "%Y%m%d")
+
+    tasks = []
+    for date in daterange(start, end):
+        for init in args.init_times:
+            tasks.append((date, init, args.lead_time))
+
+    with ProcessPoolExecutor(max_workers=args.workers) as exe:
+        futures = [
+            exe.submit(make_fc_img, d, i, l)
+            for d, i, l in tasks
+        ]
+        for f in as_completed(futures):
+            f.result()
 
 if __name__ == "__main__":
     main()
