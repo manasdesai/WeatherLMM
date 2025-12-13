@@ -1,6 +1,6 @@
 #!/bin/bash
 #PBS -N fc_img
-#PBS -A XXXXX
+#PBS -A UMCP0038
 #PBS -j oe
 #PBS -k eod
 #PBS -q main
@@ -24,6 +24,4 @@ cd $PBS_O_WORKDIR
 
 python -u fc_img.py \
   --start 20160101 \
-  --end 20251122 \
-  --init_times 0000,1200 \
-  --lead_time 12
+  --end 20251211
