@@ -164,7 +164,7 @@ class WeatherDataCollectorImageText:
         
         # #region agent log
         try:
-            if torch.cuda.is_available():
+            if log_path is not None and torch.cuda.is_available():
                 allocated = torch.cuda.memory_allocated() / 1024**3
                 with open(log_path, 'a') as f:
                     f.write(json.dumps({
@@ -282,7 +282,7 @@ class WeatherDataCollectorImageText:
         
         # #region agent log
         try:
-            if torch.cuda.is_available():
+            if log_path is not None and torch.cuda.is_available():
                 allocated = torch.cuda.memory_allocated() / 1024**3
                 with open(log_path, 'a') as f:
                     f.write(json.dumps({
@@ -637,22 +637,28 @@ def main():
     # #region agent log
     import inspect
     try:
-        with open(log_path, 'a') as f:
-            sig = inspect.signature(TrainingArguments.__init__)
-            params = list(sig.parameters.keys())
-            f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "A", "location": "LoRA_Training.py:317", "message": "TrainingArguments parameters check", "data": {"has_evaluation_strategy": "evaluation_strategy" in params, "has_eval_strategy": "eval_strategy" in params, "all_params": params[:20]}, "timestamp": __import__('time').time() * 1000}) + "\n")
+        if log_path is not None:
+            with open(log_path, 'a') as f:
+                sig = inspect.signature(TrainingArguments.__init__)
+                params = list(sig.parameters.keys())
+                f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "A", "location": "LoRA_Training.py:317", "message": "TrainingArguments parameters check", "data": {"has_evaluation_strategy": "evaluation_strategy" in params, "has_eval_strategy": "eval_strategy" in params, "all_params": params[:20]}, "timestamp": __import__('time').time() * 1000}) + "\n")
     except Exception as e:
         pass
     
     # Log distributed state before TrainingArguments
     try:
-        import torch.distributed as dist
-        is_distributed = dist.is_initialized() if hasattr(dist, 'is_initialized') else False
-        with open(log_path, 'a') as f:
-            f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "H1", "location": "LoRA_Training.py:before_training_args", "message": "Distributed state check", "data": {"num_gpus": num_gpus, "device_map_strategy": device_map_strategy if 'device_map_strategy' in locals() else None, "is_distributed_initialized": is_distributed, "torch_distributed_available": hasattr(torch.distributed, 'is_initialized')}, "timestamp": __import__('time').time() * 1000}) + "\n")
+        if log_path is not None:
+            import torch.distributed as dist
+            is_distributed = dist.is_initialized() if hasattr(dist, 'is_initialized') else False
+            with open(log_path, 'a') as f:
+                f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "H1", "location": "LoRA_Training.py:before_training_args", "message": "Distributed state check", "data": {"num_gpus": num_gpus, "device_map_strategy": device_map_strategy if 'device_map_strategy' in locals() else None, "is_distributed_initialized": is_distributed, "torch_distributed_available": hasattr(torch.distributed, 'is_initialized')}, "timestamp": __import__('time').time() * 1000}) + "\n")
     except Exception as e:
-        with open(log_path, 'a') as f:
-            f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "H1", "location": "LoRA_Training.py:before_training_args", "message": "Distributed state check failed", "data": {"error": str(e)}, "timestamp": __import__('time').time() * 1000}) + "\n")
+        if log_path is not None:
+            try:
+                with open(log_path, 'a') as f:
+                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "H1", "location": "LoRA_Training.py:before_training_args", "message": "Distributed state check failed", "data": {"error": str(e)}, "timestamp": __import__('time').time() * 1000}) + "\n")
+            except:
+                pass
     # #endregion
     
     # Determine if we should use distributed training
@@ -676,16 +682,18 @@ def main():
         os.environ["WORLD_SIZE"] = "1"
         # #region agent log
         try:
-            with open(log_path, 'a') as f:
-                f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "H4", "location": "LoRA_Training.py:env_vars_set", "message": "Set env vars to disable DDP", "data": {"LOCAL_RANK": os.environ.get("LOCAL_RANK"), "RANK": os.environ.get("RANK"), "WORLD_SIZE": os.environ.get("WORLD_SIZE")}, "timestamp": __import__('time').time() * 1000}) + "\n")
+            if log_path is not None:
+                with open(log_path, 'a') as f:
+                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "H4", "location": "LoRA_Training.py:env_vars_set", "message": "Set env vars to disable DDP", "data": {"LOCAL_RANK": os.environ.get("LOCAL_RANK"), "RANK": os.environ.get("RANK"), "WORLD_SIZE": os.environ.get("WORLD_SIZE")}, "timestamp": __import__('time').time() * 1000}) + "\n")
         except:
             pass
         # #endregion
     
     # #region agent log
     try:
-        with open(log_path, 'a') as f:
-            f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "H2", "location": "LoRA_Training.py:ddp_decision", "message": "DDP usage decision", "data": {"use_ddp": use_ddp, "num_gpus": num_gpus, "device_map_strategy": device_map_strategy if 'device_map_strategy' in locals() else None}, "timestamp": __import__('time').time() * 1000}) + "\n")
+        if log_path is not None:
+            with open(log_path, 'a') as f:
+                f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "H2", "location": "LoRA_Training.py:ddp_decision", "message": "DDP usage decision", "data": {"use_ddp": use_ddp, "num_gpus": num_gpus, "device_map_strategy": device_map_strategy if 'device_map_strategy' in locals() else None}, "timestamp": __import__('time').time() * 1000}) + "\n")
     except:
         pass
     # #endregion
@@ -720,8 +728,9 @@ def main():
     
     # #region agent log
     try:
-        with open(log_path, 'a') as f:
-            f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "H3", "location": "LoRA_Training.py:after_training_args", "message": "TrainingArguments created", "data": {"use_ddp": use_ddp, "device_map_strategy": device_map_strategy if 'device_map_strategy' in locals() else None, "local_rank_env": os.environ.get("LOCAL_RANK", "not_set")}, "timestamp": __import__('time').time() * 1000}) + "\n")
+        if log_path is not None:
+            with open(log_path, 'a') as f:
+                f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "H3", "location": "LoRA_Training.py:after_training_args", "message": "TrainingArguments created", "data": {"use_ddp": use_ddp, "device_map_strategy": device_map_strategy if 'device_map_strategy' in locals() else None, "local_rank_env": os.environ.get("LOCAL_RANK", "not_set")}, "timestamp": __import__('time').time() * 1000}) + "\n")
     except:
         pass
     # #endregion
@@ -838,4 +847,11 @@ def main():
         raise
     
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        import traceback
+        print(f"\nFatal error in main(): {e}")
+        print("\nFull traceback:")
+        traceback.print_exc()
+        raise
