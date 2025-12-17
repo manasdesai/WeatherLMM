@@ -68,3 +68,12 @@ echo "=========================================="
 echo "End Time: $(date)"
 echo "Training completed. Output saved to: $OUTPUT_DIR"
 echo "=========================================="
+
+# Print instructions for viewing logs
+echo ""
+echo "To monitor training progress in real-time, run:"
+echo "  tail -f weather_lmm_train_7b.o$PBS_JOBID"
+echo ""
+echo "TensorBoard logs are available at:"
+echo "  $OUTPUT_DIR/logs"
+echo ""
