@@ -39,7 +39,7 @@ echo "=========================================="
 # Set paths (adjust these to your actual paths on Derecho)
 TRAIN_CSV="/glade/u/home/dcalhoun/cmsc723/manifests/manifest_train.csv"
 EVAL_CSV="/glade/u/home/dcalhoun/cmsc723/manifests/manifest_test.csv"
-OUTPUT_DIR=OUTPUT_DIR="/glade/u/home/dcalhoun/cmsc723/checkpoints/weather_lora_$(date +%Y%m%d_%H%M%S)"
+OUTPUT_DIR="/glade/u/home/dcalhoun/cmsc723/checkpoints/weather_lora_$(date +%Y%m%d_%H%M%S)"
 
 # Create output directory
 mkdir -p "$OUTPUT_DIR"
