@@ -14,8 +14,20 @@ from transformers import (
     TrainingArguments,
     Trainer,
 )
+import transformers
 
 from peft import LoraConfig, get_peft_model
+
+# #region agent log
+import json
+import os
+log_path = "/Users/dcalhoun/Desktop/Courses/Fall 2025/CMSC 723/Project/WeatherLMM/.cursor/debug.log"
+try:
+    with open(log_path, 'a') as f:
+        f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "A", "location": "LoRA_Training.py:19", "message": "Transformers version check", "data": {"transformers_version": transformers.__version__}, "timestamp": __import__('time').time() * 1000}) + "\n")
+except Exception as e:
+    pass
+# #endregion
 
 #loading our dataset from our manifest file.
 class ImageTextDataset(Dataset):
@@ -314,6 +326,17 @@ def main():
     eval_dataset = ImageTextDataset(args.eval_csv) if args.eval_csv else None
     data_collator = WeatherDataCollectorImageText(processor=processor)
     
+    # #region agent log
+    import inspect
+    try:
+        with open(log_path, 'a') as f:
+            sig = inspect.signature(TrainingArguments.__init__)
+            params = list(sig.parameters.keys())
+            f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "A", "location": "LoRA_Training.py:317", "message": "TrainingArguments parameters check", "data": {"has_evaluation_strategy": "evaluation_strategy" in params, "has_eval_strategy": "eval_strategy" in params, "all_params": params[:20]}, "timestamp": __import__('time').time() * 1000}) + "\n")
+    except Exception as e:
+        pass
+    # #endregion
+    
     training_args = TrainingArguments(
         output_dir=args.output_dir,
         per_device_train_batch_size=args.per_device_train_batch_size,
@@ -325,7 +348,7 @@ def main():
         fp16=args.fp16,
         bf16=args.bf16,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
-        evaluation_strategy="steps" if eval_dataset is not None else "no",
+        eval_strategy="steps" if eval_dataset is not None else "no",
         logging_dir=os.path.join(args.output_dir, "logs"),
         save_strategy="steps",
         dataloader_num_workers=4,
