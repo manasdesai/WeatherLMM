@@ -1,4 +1,5 @@
 import os
+import json
 import argparse
 from dataclasses import dataclass
 from typing import List, Dict, Any
@@ -17,6 +18,46 @@ from transformers import (
 import transformers
 
 from peft import LoraConfig, get_peft_model
+
+# #region agent log
+log_path = "/Users/dcalhoun/Desktop/Courses/Fall 2025/CMSC 723/Project/WeatherLMM/.cursor/debug.log"
+
+def log_memory(location: str, message: str, hypothesis_id: str = "MEM"):
+    """Log GPU memory usage."""
+    try:
+        if torch.cuda.is_available():
+            allocated = torch.cuda.memory_allocated() / 1024**3  # GB
+            reserved = torch.cuda.memory_reserved() / 1024**3  # GB
+            max_allocated = torch.cuda.max_memory_allocated() / 1024**3  # GB
+            with open(log_path, 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": hypothesis_id,
+                    "location": location,
+                    "message": message,
+                    "data": {
+                        "allocated_gb": round(allocated, 2),
+                        "reserved_gb": round(reserved, 2),
+                        "max_allocated_gb": round(max_allocated, 2),
+                        "cuda_available": True
+                    },
+                    "timestamp": __import__('time').time() * 1000
+                }) + "\n")
+        else:
+            with open(log_path, 'a') as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "run1",
+                    "hypothesisId": hypothesis_id,
+                    "location": location,
+                    "message": message,
+                    "data": {"cuda_available": False},
+                    "timestamp": __import__('time').time() * 1000
+                }) + "\n")
+    except Exception as e:
+        pass
+# #endregion
 
 # #region agent log
 import json
@@ -110,6 +151,24 @@ class WeatherDataCollectorImageText:
     def __call__(self, batch: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
         weather_images_batch = [item["image"] for item in batch]
         text = [item["text"] for item in batch]
+        
+        # #region agent log
+        try:
+            if torch.cuda.is_available():
+                allocated = torch.cuda.memory_allocated() / 1024**3
+                with open(log_path, 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "MEM_COLLATOR",
+                        "location": "LoRA_Training.py:data_collator",
+                        "message": "Memory in data collator",
+                        "data": {"allocated_gb": round(allocated, 2), "batch_size": len(batch)},
+                        "timestamp": __import__('time').time() * 1000
+                    }) + "\n")
+        except:
+            pass
+        # #endregion
         
         full_text = []
         user_only_messages = []
@@ -210,6 +269,25 @@ class WeatherDataCollectorImageText:
             labels[i, :prompt_len] = -100  # Masking the prompt part
             
         model_inputs["labels"] = labels
+        
+        # #region agent log
+        try:
+            if torch.cuda.is_available():
+                allocated = torch.cuda.memory_allocated() / 1024**3
+                with open(log_path, 'a') as f:
+                    f.write(json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "run1",
+                        "hypothesisId": "MEM_COLLATOR_END",
+                        "location": "LoRA_Training.py:data_collator_end",
+                        "message": "Memory after data collator processing",
+                        "data": {"allocated_gb": round(allocated, 2)},
+                        "timestamp": __import__('time').time() * 1000
+                    }) + "\n")
+        except:
+            pass
+        # #endregion
+        
         return model_inputs
   
 def parse_args():
@@ -313,6 +391,22 @@ def parse_args():
         default=-1,
         help="If >0, limit total training steps for quick experiments.",
     )
+    parser.add_argument(
+        "--use_8bit_optimizer",
+        action="store_true",
+        help="Use 8-bit optimizer (bitsandbytes) to reduce memory. Requires: pip install bitsandbytes",
+    )
+    parser.add_argument(
+        "--multi_gpu",
+        action="store_true",
+        help="Enable multi-GPU training (data parallelism). Uses all available GPUs.",
+    )
+    parser.add_argument(
+        "--device_map",
+        type=str,
+        default="auto",
+        help="Device map for model parallelism. Options: 'auto', 'balanced', 'balanced_low_0', or custom dict. Use 'auto' for automatic distribution.",
+    )
     return parser.parse_args()
 
 def main():
@@ -363,14 +457,56 @@ def main():
     
     print("Dataset validation passed.")
     
+    # #region agent log
+    log_memory("LoRA_Training.py:before_model_load", "Memory before model loading", "MEM1")
+    # #endregion
+    
+    # Check available GPUs
+    if torch.cuda.is_available():
+        num_gpus = torch.cuda.device_count()
+        print(f"Available GPUs: {num_gpus}")
+        for i in range(num_gpus):
+            props = torch.cuda.get_device_properties(i)
+            print(f"  GPU {i}: {props.name} ({props.total_memory / 1024**3:.2f} GB)")
+    else:
+        num_gpus = 0
+        print("No CUDA GPUs available")
+    
+    # Determine device_map strategy
+    if num_gpus > 1:
+        if args.device_map == "auto":
+            # Auto-distribute model across available GPUs
+            device_map_strategy = "auto"
+            print(f"\nUsing model parallelism: Auto-distributing model across {num_gpus} GPUs")
+        elif args.device_map == "balanced":
+            device_map_strategy = "balanced"
+            print(f"\nUsing model parallelism: Balanced distribution across {num_gpus} GPUs")
+        else:
+            device_map_strategy = args.device_map
+            print(f"\nUsing custom device_map: {device_map_strategy}")
+    else:
+        device_map_strategy = None if num_gpus == 0 else "auto"
+        if num_gpus == 1:
+            print(f"\nSingle GPU detected. Using device_map='auto' for optimal memory usage.")
+    
     # Load model with error handling
     print(f"Loading model: {args.model_name}")
     try:
         model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
                 args.model_name,
                 torch_dtype=(torch.float16 if args.fp16 else None),
-                device_map="auto",
+                device_map=device_map_strategy,
             )
+        # #region agent log
+        log_memory("LoRA_Training.py:after_model_load", "Memory after model loading", "MEM2")
+        # #endregion
+        
+        # Clear cache after model loading
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            # #region agent log
+            log_memory("LoRA_Training.py:after_cache_clear", "Memory after cache clear", "MEM3")
+            # #endregion
     except Exception as e:
         raise RuntimeError(f"Failed to load model {args.model_name}: {e}")
     
@@ -398,10 +534,21 @@ def main():
     try:
         model = get_peft_model(model, peft_config)
         model.print_trainable_parameters()
+        # #region agent log
+        log_memory("LoRA_Training.py:after_lora", "Memory after LoRA application", "MEM4")
+        # #endregion
+        
+        # Clear cache after LoRA
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
     except Exception as e:
         raise RuntimeError(f"Failed to apply LoRA configuration: {e}. Check that target_modules exist in the model.")
     
     data_collator = WeatherDataCollectorImageText(processor=processor)
+    
+    # #region agent log
+    log_memory("LoRA_Training.py:before_training_args", "Memory before TrainingArguments", "MEM5")
+    # #endregion
     
     # Validate training configuration
     if args.max_steps > 0 and args.num_train_epochs > 0:
@@ -449,7 +596,7 @@ def main():
         eval_strategy=eval_strategy,
         logging_dir=os.path.join(args.output_dir, "logs"),
         save_strategy=save_strategy,
-        dataloader_num_workers=4,
+        dataloader_num_workers=0,  # Reduced from 4 to 0 to save memory (prevents parallel data loading)
         logging_steps=args.logging_steps,
         eval_steps=eval_steps if eval_strategy == "steps" else None,
         save_steps=save_steps,
@@ -458,7 +605,16 @@ def main():
         load_best_model_at_end=load_best_model,
         metric_for_best_model="eval_loss" if load_best_model else None,
         remove_unused_columns=False,
+        gradient_checkpointing=True,  # Enable gradient checkpointing to save memory
+        dataloader_pin_memory=False,  # Disable pin_memory to save memory
+        optim="adamw_8bit" if args.use_8bit_optimizer else "adamw_torch",  # Use 8-bit optimizer if available
+        ddp_find_unused_parameters=False,  # Faster DDP training
+        ddp_backend="nccl" if torch.cuda.is_available() else "gloo",  # NCCL for multi-GPU
     )
+    
+    # #region agent log
+    log_memory("LoRA_Training.py:before_trainer_init", "Memory before Trainer initialization", "MEM6")
+    # #endregion
     
     trainer = Trainer(
         model=model,
@@ -468,9 +624,90 @@ def main():
         data_collator=data_collator,
     )
     
+    # #region agent log
+    log_memory("LoRA_Training.py:before_training", "Memory before training starts", "MEM7")
+    # #endregion
+    
+    # Check available memory before training
+    if torch.cuda.is_available():
+        allocated = torch.cuda.memory_allocated() / 1024**3  # GB
+        reserved = torch.cuda.memory_reserved() / 1024**3  # GB
+        total = torch.cuda.get_device_properties(0).total_memory / 1024**3  # GB
+        free = total - reserved
+        
+        print(f"\n{'='*60}")
+        print(f"GPU Memory Analysis")
+        print(f"{'='*60}")
+        print(f"Total GPU Memory: {total:.2f} GB")
+        print(f"Currently Reserved: {reserved:.2f} GB ({reserved/total*100:.1f}%)")
+        print(f"Currently Allocated: {allocated:.2f} GB")
+        print(f"Free Memory: {free:.2f} GB")
+        print(f"\nWhy memory usage is so high:")
+        print(f"  1. Base Model (Qwen2.5-VL-7B FP16): ~17-20 GB")
+        print(f"     - Model weights stored in FP16")
+        print(f"  2. 12 Images per Sample (CRITICAL MEMORY KILLER):")
+        print(f"     - Vision encoder processes ALL 12 images simultaneously")
+        print(f"     - Each image: ~1024x1024 pixels → large activation tensors")
+        print(f"     - Vision encoder activations: ~5-10 GB per batch")
+        print(f"     - Image pixel_values tensors: ~2-4 GB")
+        print(f"  3. Optimizer States (AdamW):")
+        print(f"     - Momentum: ~17-20 GB (if full model)")
+        print(f"     - Variance: ~17-20 GB (if full model)")
+        print(f"     - With LoRA: Only trainable params (~0.1-0.5 GB)")
+        print(f"  4. Gradients: ~17-20 GB during backward pass")
+        print(f"  5. Intermediate Activations: ~5-10 GB (stored for backprop)")
+        print(f"\nEstimated Breakdown:")
+        print(f"  Model weights: ~20 GB")
+        print(f"  Vision processing (12 images): ~10-15 GB")
+        print(f"  Activations + Gradients: ~25-30 GB")
+        print(f"  Total: ~55-65 GB (exceeds 40GB GPU!)")
+        print(f"\nKey Issue: Processing 12 images through vision encoder simultaneously")
+        print(f"         is extremely memory-intensive, even with batch_size=1")
+        
+        # Multi-GPU information
+        if num_gpus > 1:
+            estimated_per_gpu = (total * num_gpus) / num_gpus  # Simplified, but shows distribution
+            print(f"\n{'='*60}")
+            print(f"Multi-GPU Training Available ({num_gpus} GPUs)")
+            print(f"{'='*60}")
+            print(f"Model Parallelism: Model layers split across {num_gpus} GPUs")
+            print(f"Data Parallelism: Trainer uses DistributedDataParallel")
+            print(f"Total GPU Memory: ~{total * num_gpus:.1f} GB across {num_gpus} GPUs")
+            print(f"Expected per-GPU usage: ~{total / num_gpus:.1f} GB per GPU (model split)")
+            print(f"Memory Benefit: Model weights distributed, reducing per-GPU load")
+            print(f"{'='*60}\n")
+        else:
+            print(f"\n💡 TIP: Use multiple GPUs to distribute memory:")
+            print(f"   - Request multiple GPUs in your PBS script: ngpus=2 or ngpus=4")
+            print(f"   - The model will automatically split across GPUs")
+            print(f"   - Trainer will use data parallelism for faster training")
+            print(f"{'='*60}\n")
+        
+        # Warn if memory is very low
+        if free < 2.0:  # Less than 2GB free
+            print(f"⚠️  CRITICAL: Very low GPU memory ({free:.2f} GB free).")
+            print("\nImmediate actions needed:")
+            print("  1. Use MULTIPLE GPUs (recommended):")
+            print("     - Request 2-4 GPUs in PBS: ngpus=2 or ngpus=4")
+            print("     - Model will auto-distribute across GPUs")
+            print("  2. Set: export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True")
+            print("  3. Use 8-bit optimizer (install bitsandbytes):")
+            print("     pip install bitsandbytes")
+            print("     Then add: --use_8bit_optimizer")
+            print("  4. Consider using 3B model instead: --model_name Qwen/Qwen2.5-VL-3B-Instruct")
+            print("  5. Increase gradient_accumulation_steps to 8 or 16")
+            print("  6. Ensure batch_size=1 and dataloader_num_workers=0")
+        
+        # Clear cache before training
+        torch.cuda.empty_cache()
+        torch.cuda.reset_peak_memory_stats()
+    
     # Train with error handling
     try:
         trainer.train()
+        # #region agent log
+        log_memory("LoRA_Training.py:after_training", "Memory after training completes", "MEM8")
+        # #endregion
     except Exception as e:
         print(f"\nTraining failed with error: {e}")
         print(f"Partial checkpoints may be available in: {args.output_dir}")
