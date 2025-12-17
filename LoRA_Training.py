@@ -326,6 +326,18 @@ def parse_args():
         help="Optional eval CSV with same columns.",
     )
     parser.add_argument(
+        "--max_train_samples",
+        type=int,
+        default=None,
+        help="Maximum number of training samples to use (for quick development). None = use all samples.",
+    )
+    parser.add_argument(
+        "--max_eval_samples",
+        type=int,
+        default=None,
+        help="Maximum number of evaluation samples to use (for quick development). None = use all samples.",
+    )
+    parser.add_argument(
         "--output_dir",
         type=str,
         default="./qwen2_5_vl_weather_lora",
