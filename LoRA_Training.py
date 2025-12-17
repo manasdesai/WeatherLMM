@@ -72,8 +72,21 @@ except Exception as e:
 
 #loading our dataset from our manifest file.
 class ImageTextDataset(Dataset):
-    def __init__(self, csv_path:str):
+    def __init__(self, csv_path:str, max_samples: int = None):
+        """
+        Initialize dataset from CSV.
+        
+        Args:
+            csv_path: Path to CSV manifest file
+            max_samples: Maximum number of samples to load (None = all samples). Useful for quick development.
+        """
         self.df = pd.read_csv(csv_path)
+        
+        # Limit dataset size if specified (for quick development)
+        if max_samples is not None and max_samples > 0:
+            original_size = len(self.df)
+            self.df = self.df.head(max_samples)
+            print(f"Limited dataset to {len(self.df)} samples (from {original_size} total)")
         
         # Support both formats:
         # 1. Semicolon-separated image_paths column (from create_full_image_manifest.py)
@@ -425,18 +438,22 @@ def main():
     
     # Load and validate datasets before model loading (faster failure)
     print("Loading training dataset...")
-    train_dataset = ImageTextDataset(args.train_csv)
+    train_dataset = ImageTextDataset(args.train_csv, max_samples=args.max_train_samples)
     if len(train_dataset) == 0:
         raise ValueError(f"Training dataset is empty: {args.train_csv}")
     print(f"Training samples: {len(train_dataset)}")
+    if args.max_train_samples:
+        print(f"  (Limited from full dataset for quick development)")
     
     eval_dataset = None
     if args.eval_csv:
         print("Loading evaluation dataset...")
-        eval_dataset = ImageTextDataset(args.eval_csv)
+        eval_dataset = ImageTextDataset(args.eval_csv, max_samples=args.max_eval_samples)
         if len(eval_dataset) == 0:
             raise ValueError(f"Evaluation dataset is empty: {args.eval_csv}")
         print(f"Evaluation samples: {len(eval_dataset)}")
+        if args.max_eval_samples:
+            print(f"  (Limited from full dataset for quick development)")
     
     # Validate dataset content (check first few samples)
     print("Validating dataset content...")
