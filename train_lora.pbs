@@ -4,8 +4,8 @@
 #PBS -j oe
 #PBS -k eod
 #PBS -q main
-#PBS -l select=1:ncpus=32:ngpus=1:mem=256gb
-#PBS -l walltime=24:00:00
+#PBS -l select=1:ncpus=32:ngpus=1:mem=128gb
+#PBS -l walltime=01:00:00
 #PBS -m abe
 #PBS -M dcalhoun@umd.edu
 
@@ -18,7 +18,7 @@ module load intel/2025.2.1
 module load openmpi/5.0.8
 
 # Activate your Conda environment
-conda activate cmsc723
+conda activate weatherlmm
 
 # Change to the directory from which the job was submitted
 cd $PBS_O_WORKDIR
@@ -37,9 +37,9 @@ echo "Start Time: $(date)"
 echo "=========================================="
 
 # Set paths (adjust these to your actual paths on Derecho)
-TRAIN_CSV="/glade/work/dcalhoun/WeatherLMM/manifests/manifest_train.csv"
-EVAL_CSV="/glade/work/dcalhoun/WeatherLMM/manifests/manifest_test.csv"
-OUTPUT_DIR="/glade/work/dcalhoun/WeatherLMM/checkpoints/weather_lora_$(date +%Y%m%d_%H%M%S)"
+TRAIN_CSV="/glade/u/home/dcalhoun/cmsc723/manifests/manifest_train.csv"
+EVAL_CSV="/glade/u/home/dcalhoun/cmsc723/manifests/manifest_test.csv"
+OUTPUT_DIR=OUTPUT_DIR="/glade/u/home/dcalhoun/cmsc723/checkpoints/weather_lora_$(date +%Y%m%d_%H%M%S)"
 
 # Create output directory
 mkdir -p "$OUTPUT_DIR"
@@ -50,7 +50,7 @@ python -u LoRA_Training.py \
     --train_csv "$TRAIN_CSV" \
     --eval_csv "$EVAL_CSV" \
     --output_dir "$OUTPUT_DIR" \
-    --num_train_epochs 3 \
+    --num_train_epochs 10 \
     --per_device_train_batch_size 1 \
     --per_device_eval_batch_size 1 \
     --learning_rate 1e-4 \
