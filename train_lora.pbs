@@ -4,8 +4,8 @@
 #PBS -j oe
 #PBS -k eod
 #PBS -q main
-#PBS -l select=1:ncpus=64:ngpus=4:mem=512GB
-#PBS -l walltime=02:00:00
+#PBS -l select=1:ncpus=64:ngpus=1:mem=128
+#PBS -l walltime=01:00:00
 #PBS -m abe
 #PBS -M dcalhoun@umd.edu
 
@@ -41,7 +41,7 @@ echo "=========================================="
 # Set paths
 TRAIN_CSV="/glade/u/home/dcalhoun/cmsc723/manifests/manifest_train.csv"
 EVAL_CSV="/glade/u/home/dcalhoun/cmsc723/manifests/manifest_test.csv"
-OUTPUT_DIR="/glade/u/home/dcalhoun/cmsc723/checkpoints/weather_lora_multi_gpu_$(date +%Y%m%d_%H%M%S)"
+OUTPUT_DIR="/glade/u/home/dcalhoun/cmsc723/checkpoints/weather_lora_$(date +%Y%m%d_%H%M%S)"
 
 # Create output directory
 mkdir -p "$OUTPUT_DIR"
@@ -54,6 +54,8 @@ python -u LoRA_Training.py \
     --train_csv "$TRAIN_CSV" \
     --eval_csv "$EVAL_CSV" \
     --output_dir "$OUTPUT_DIR" \
+    --max_train_samples 100 \
+    --max_eval_samples 20 \
     --num_train_epochs 3 \
     --per_device_train_batch_size 1 \
     --per_device_eval_batch_size 1 \

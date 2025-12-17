@@ -19,55 +19,7 @@ import transformers
 
 from peft import LoraConfig, get_peft_model
 
-# #region agent log
-# log_path will be set in main() based on command-line arguments
-log_path = None
-
-def log_memory(location: str, message: str, hypothesis_id: str = "MEM", log_path: str = None):
-    """Log GPU memory usage."""
-    if log_path is None:
-        return  # Skip logging if log_path not set
-    try:
-        # Ensure directory exists
-        log_dir = os.path.dirname(log_path)
-        if log_dir:
-            os.makedirs(log_dir, exist_ok=True)
-        
-        if torch.cuda.is_available():
-            allocated = torch.cuda.memory_allocated() / 1024**3  # GB
-            reserved = torch.cuda.memory_reserved() / 1024**3  # GB
-            max_allocated = torch.cuda.max_memory_allocated() / 1024**3  # GB
-            with open(log_path, 'a') as f:
-                f.write(json.dumps({
-                    "sessionId": "debug-session",
-                    "runId": "run1",
-                    "hypothesisId": hypothesis_id,
-                    "location": location,
-                    "message": message,
-                    "data": {
-                        "allocated_gb": round(allocated, 2),
-                        "reserved_gb": round(reserved, 2),
-                        "max_allocated_gb": round(max_allocated, 2),
-                        "cuda_available": True
-                    },
-                    "timestamp": __import__('time').time() * 1000
-                }) + "\n")
-        else:
-            with open(log_path, 'a') as f:
-                f.write(json.dumps({
-                    "sessionId": "debug-session",
-                    "runId": "run1",
-                    "hypothesisId": hypothesis_id,
-                    "location": location,
-                    "message": message,
-                    "data": {"cuda_available": False},
-                    "timestamp": __import__('time').time() * 1000
-                }) + "\n")
-    except Exception as e:
-        pass
-# #endregion
-
-#loading our dataset from our manifest file.
+# loading our dataset from our manifest file.
 class ImageTextDataset(Dataset):
     def __init__(self, csv_path:str, max_samples: int = None):
         """
@@ -162,24 +114,6 @@ class WeatherDataCollectorImageText:
         weather_images_batch = [item["image"] for item in batch]
         text = [item["text"] for item in batch]
         
-        # #region agent log
-        try:
-            if log_path is not None and torch.cuda.is_available():
-                allocated = torch.cuda.memory_allocated() / 1024**3
-                with open(log_path, 'a') as f:
-                    f.write(json.dumps({
-                        "sessionId": "debug-session",
-                        "runId": "run1",
-                        "hypothesisId": "MEM_COLLATOR",
-                        "location": "LoRA_Training.py:data_collator",
-                        "message": "Memory in data collator",
-                        "data": {"allocated_gb": round(allocated, 2), "batch_size": len(batch)},
-                        "timestamp": __import__('time').time() * 1000
-                    }) + "\n")
-        except:
-            pass
-        # #endregion
-        
         full_text = []
         user_only_messages = []
 
@@ -187,7 +121,7 @@ class WeatherDataCollectorImageText:
             user_message = {
                 "role": "user",
                 "content": [
-                    #Adding our 12 images as context for the model.
+                    # Adding our 12 images as context for the model.
                     {"type": "image"},
                     {"type": "image"},
                     {"type": "image"},
@@ -203,22 +137,19 @@ class WeatherDataCollectorImageText:
                     {
                         "type": "text",
                         "text": (
-                            "You are a weather forecasting assistant. "
-                            "Given these 12 forecast maps (temperature and geopotential at various pressure levels,"
-                            "temperature and wind, thickness and mean sea level pressure,"
-                            "and lastely wind and relative humidity at various pressure levels),"
-                            "describe the expected weather in detail."
-                            
-                            # Dean's suggested prompt:
-                            
-                            # "You are a skilled weather forecasting system operating on behalf of the National
-                            # Weather Service’s Weather Prediction Center. Given this set of numerical weather prediction
-                            # model output images for a +12 hour forecast, produce a short-range synoptic-scale
-                            # weather forecast for the continental United States over the next 1 to 2 days.
-                            # Your forecast will be relied upon by millions across the country, so it is critical
-                            # to be careful and accurate. Think deeply about each weather variable and their
-                            # relationships, recalling principles of quasi-geostrophic meteorology,
-                            # to ensure your forecast is physically consistent before generating your final answer.”
+                            "You are a skilled weather forecasting system operating on behalf of the National"
+                            "Weather Service’s Weather Prediction Center. Given a set of numerical weather"
+                            "prediction model output images for a +12 hour forecast, produce a short-range"
+                            "synoptic-scale weather forecast for the continental United States over the next 1"
+                            "to 2 days. Your forecast will be relied upon by millions across the country, so it"
+                            "is critical to be careful and accurate. Think deeply about each weather variable"
+                            "and their relationships, recalling principles of quasi-geostrophic meteorology,"
+                            "to ensure your forecast is physically consistent before generating your final"
+                            "answer."
+                            "Provided are 12 forecast maps. Temperature and geopotential at 1000hPa, 850hPa,"
+                            "700hPa, 500hPa, and 200hPa; wind and relative humidity at 1000hPa, 850hPa, 700hPa,"
+                            "500hPa, and 200hPa; 2m temperature and 10m wind; 1000hpa-500hPa thickness and mean"
+                            "sea level pressure. Begin forecast."
                         ),
                     },
                 ],
@@ -234,7 +165,7 @@ class WeatherDataCollectorImageText:
             full_text.append(full_messages)
             user_only_messages.append([user_message])
 
-        #This is for our user only prompts where we're getting our prompt length in tokens.
+        # This is for our user only prompts where we're getting our prompt length in tokens.
         prompt_lengths = []
         for user_msg in user_only_messages:
             user_text = self.processor.apply_chat_template(
@@ -249,15 +180,15 @@ class WeatherDataCollectorImageText:
             )
             prompt_lengths.append(len(user_tok["input_ids"]))
         
-        #This is the full message with everything included, the user + assistant.
+        # This is the full message with everything included, the user + assistant.
         full_messages = self.processor.apply_chat_template(
             full_text,
             tokenize=False,
             add_generation_prompt=False,
         )
         
-        #flattening the images for the batch processor.
-        #batch size x 12 images for each.
+        # flattening the images for the batch processor.
+        # batch size x 12 images for each.
         
         all_weather_images = []
         for images_per_sample in weather_images_batch:
@@ -265,38 +196,20 @@ class WeatherDataCollectorImageText:
         
         model_inputs = self.processor(
             text=full_messages,
-            images=all_weather_images, #passing all of the images in the batch flattened.
+            images=all_weather_images, # passing all of the images in the batch flattened.
             padding=True,
-            #return PyTorch tensors
+            # return PyTorch tensors
             return_tensors="pt",
         )
         
         input_ids = model_inputs["input_ids"]
         labels = input_ids.clone()
         
-        #Masking the users tokens so we the assistant tokens contribute to our loss.
+        # Masking the users tokens so we the assistant tokens contribute to our loss.
         for i, prompt_len in enumerate(prompt_lengths):
             labels[i, :prompt_len] = -100  # Masking the prompt part
             
         model_inputs["labels"] = labels
-        
-        # #region agent log
-        try:
-            if log_path is not None and torch.cuda.is_available():
-                allocated = torch.cuda.memory_allocated() / 1024**3
-                with open(log_path, 'a') as f:
-                    f.write(json.dumps({
-                        "sessionId": "debug-session",
-                        "runId": "run1",
-                        "hypothesisId": "MEM_COLLATOR_END",
-                        "location": "LoRA_Training.py:data_collator_end",
-                        "message": "Memory after data collator processing",
-                        "data": {"allocated_gb": round(allocated, 2)},
-                        "timestamp": __import__('time').time() * 1000
-                    }) + "\n")
-        except:
-            pass
-        # #endregion
         
         return model_inputs
   
@@ -346,12 +259,7 @@ def parse_args():
         default=None,
         help="Directory for TensorBoard logs. Defaults to {output_dir}/logs if not specified.",
     )
-    parser.add_argument(
-        "--debug_log_path",
-        type=str,
-        default=None,
-        help="Path for debug log file. Defaults to {output_dir}/debug.log if not specified.",
-    )
+
     parser.add_argument(
         "--num_train_epochs",
         type=int,
@@ -457,18 +365,6 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
     print(f"Output directory: {args.output_dir}")
     
-    # Set debug log path (configurable via command-line, defaults to output_dir/debug.log)
-    global log_path
-    if args.debug_log_path:
-        log_path = args.debug_log_path
-    else:
-        log_path = os.path.join(args.output_dir, "debug.log")
-    
-    # Ensure log directory exists
-    log_dir = os.path.dirname(log_path)
-    if log_dir:
-        os.makedirs(log_dir, exist_ok=True)
-    
     # Load and validate datasets before model loading (faster failure)
     print("Loading training dataset...")
     train_dataset = ImageTextDataset(args.train_csv, max_samples=args.max_train_samples)
@@ -506,10 +402,6 @@ def main():
                 raise ValueError(f"Expected 12 images, got {len(sample['image'])} in evaluation sample {i}")
     
     print("Dataset validation passed.")
-    
-    # #region agent log
-    log_memory("LoRA_Training.py:before_model_load", "Memory before model loading", "MEM1", log_path)
-    # #endregion
     
     # Check available GPUs
     if torch.cuda.is_available():
@@ -560,16 +452,10 @@ def main():
                 torch_dtype=(torch.float16 if args.fp16 else None),
                 device_map=device_map_strategy,
             )
-        # #region agent log
-        log_memory("LoRA_Training.py:after_model_load", "Memory after model loading", "MEM2", log_path)
-        # #endregion
         
         # Clear cache after model loading
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-            # #region agent log
-            log_memory("LoRA_Training.py:after_cache_clear", "Memory after cache clear", "MEM3", log_path)
-            # #endregion
     except Exception as e:
         raise RuntimeError(f"Failed to load model {args.model_name}: {e}")
     
@@ -597,9 +483,6 @@ def main():
     try:
         model = get_peft_model(model, peft_config)
         model.print_trainable_parameters()
-        # #region agent log
-        log_memory("LoRA_Training.py:after_lora", "Memory after LoRA application", "MEM4", log_path)
-        # #endregion
         
         # Clear cache after LoRA
         if torch.cuda.is_available():
@@ -608,10 +491,6 @@ def main():
         raise RuntimeError(f"Failed to apply LoRA configuration: {e}. Check that target_modules exist in the model.")
     
     data_collator = WeatherDataCollectorImageText(processor=processor)
-    
-    # #region agent log
-    log_memory("LoRA_Training.py:before_training_args", "Memory before TrainingArguments", "MEM5", log_path)
-    # #endregion
     
     # Validate training configuration
     if args.max_steps > 0 and args.num_train_epochs > 0:
@@ -634,33 +513,6 @@ def main():
         print(f"Auto-adjusting save_steps to {adjusted_save_steps} to satisfy load_best_model_at_end requirement.")
         save_steps = adjusted_save_steps
     
-    # #region agent log
-    import inspect
-    try:
-        if log_path is not None:
-            with open(log_path, 'a') as f:
-                sig = inspect.signature(TrainingArguments.__init__)
-                params = list(sig.parameters.keys())
-                f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "A", "location": "LoRA_Training.py:317", "message": "TrainingArguments parameters check", "data": {"has_evaluation_strategy": "evaluation_strategy" in params, "has_eval_strategy": "eval_strategy" in params, "all_params": params[:20]}, "timestamp": __import__('time').time() * 1000}) + "\n")
-    except Exception as e:
-        pass
-    
-    # Log distributed state before TrainingArguments
-    try:
-        if log_path is not None:
-            import torch.distributed as dist
-            is_distributed = dist.is_initialized() if hasattr(dist, 'is_initialized') else False
-            with open(log_path, 'a') as f:
-                f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "H1", "location": "LoRA_Training.py:before_training_args", "message": "Distributed state check", "data": {"num_gpus": num_gpus, "device_map_strategy": device_map_strategy if 'device_map_strategy' in locals() else None, "is_distributed_initialized": is_distributed, "torch_distributed_available": hasattr(torch.distributed, 'is_initialized')}, "timestamp": __import__('time').time() * 1000}) + "\n")
-    except Exception as e:
-        if log_path is not None:
-            try:
-                with open(log_path, 'a') as f:
-                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "H1", "location": "LoRA_Training.py:before_training_args", "message": "Distributed state check failed", "data": {"error": str(e)}, "timestamp": __import__('time').time() * 1000}) + "\n")
-            except:
-                pass
-    # #endregion
-    
     # Determine if we should use distributed training
     # When using device_map (model parallelism), we should NOT use DDP (data parallelism)
     # They are incompatible - device_map splits model across GPUs, DDP replicates model on each GPU
@@ -680,23 +532,6 @@ def main():
         os.environ["LOCAL_RANK"] = "-1"
         os.environ["RANK"] = "-1"
         os.environ["WORLD_SIZE"] = "1"
-        # #region agent log
-        try:
-            if log_path is not None:
-                with open(log_path, 'a') as f:
-                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "H4", "location": "LoRA_Training.py:env_vars_set", "message": "Set env vars to disable DDP", "data": {"LOCAL_RANK": os.environ.get("LOCAL_RANK"), "RANK": os.environ.get("RANK"), "WORLD_SIZE": os.environ.get("WORLD_SIZE")}, "timestamp": __import__('time').time() * 1000}) + "\n")
-        except:
-            pass
-        # #endregion
-    
-    # #region agent log
-    try:
-        if log_path is not None:
-            with open(log_path, 'a') as f:
-                f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "H2", "location": "LoRA_Training.py:ddp_decision", "message": "DDP usage decision", "data": {"use_ddp": use_ddp, "num_gpus": num_gpus, "device_map_strategy": device_map_strategy if 'device_map_strategy' in locals() else None}, "timestamp": __import__('time').time() * 1000}) + "\n")
-    except:
-        pass
-    # #endregion
     
     training_args = TrainingArguments(
         output_dir=args.output_dir,
@@ -726,19 +561,6 @@ def main():
         optim="adamw_8bit" if args.use_8bit_optimizer else "adamw_torch",  # Use 8-bit optimizer if available
     )
     
-    # #region agent log
-    try:
-        if log_path is not None:
-            with open(log_path, 'a') as f:
-                f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "H3", "location": "LoRA_Training.py:after_training_args", "message": "TrainingArguments created", "data": {"use_ddp": use_ddp, "device_map_strategy": device_map_strategy if 'device_map_strategy' in locals() else None, "local_rank_env": os.environ.get("LOCAL_RANK", "not_set")}, "timestamp": __import__('time').time() * 1000}) + "\n")
-    except:
-        pass
-    # #endregion
-    
-    # #region agent log
-    log_memory("LoRA_Training.py:before_trainer_init", "Memory before Trainer initialization", "MEM6", log_path)
-    # #endregion
-    
     trainer = Trainer(
         model=model,
         args=training_args,
@@ -746,10 +568,6 @@ def main():
         eval_dataset=eval_dataset,
         data_collator=data_collator,
     )
-    
-    # #region agent log
-    log_memory("LoRA_Training.py:before_training", "Memory before training starts", "MEM7", log_path)
-    # #endregion
     
     # Check available memory before training
     if torch.cuda.is_available():
@@ -828,9 +646,6 @@ def main():
     # Train with error handling
     try:
         trainer.train()
-        # #region agent log
-        log_memory("LoRA_Training.py:after_training", "Memory after training completes", "MEM8", log_path)
-        # #endregion
     except Exception as e:
         print(f"\nTraining failed with error: {e}")
         print(f"Partial checkpoints may be available in: {args.output_dir}")
@@ -847,11 +662,4 @@ def main():
         raise
     
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception as e:
-        import traceback
-        print(f"\nFatal error in main(): {e}")
-        print("\nFull traceback:")
-        traceback.print_exc()
-        raise
+    main()
