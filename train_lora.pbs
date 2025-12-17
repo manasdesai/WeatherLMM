@@ -1,0 +1,70 @@
+#!/bin/bash
+#PBS -N weather_lmm_train
+#PBS -A UMCP0038
+#PBS -j oe
+#PBS -k eod
+#PBS -q main
+#PBS -l select=1:ncpus=32:ngpus=1:mem=256gb
+#PBS -l walltime=24:00:00
+#PBS -m abe
+#PBS -M dcalhoun@umd.edu
+
+# Load necessary modules
+module purge
+module load ncarenv-basic/25.10
+module load conda
+module load cuda/12.2.0
+module load intel/2025.2.1
+module load openmpi/5.0.8
+
+# Activate your Conda environment
+conda activate cmsc723
+
+# Change to the directory from which the job was submitted
+cd $PBS_O_WORKDIR
+
+# Set environment variables for GPU
+export CUDA_VISIBLE_DEVICES=0
+export NCCL_DEBUG=INFO
+
+# Print job information
+echo "=========================================="
+echo "Job ID: $PBS_JOBID"
+echo "Job Name: $PBS_JOBNAME"
+echo "Node: $HOSTNAME"
+echo "Working Directory: $PBS_O_WORKDIR"
+echo "Start Time: $(date)"
+echo "=========================================="
+
+# Set paths (adjust these to your actual paths on Derecho)
+TRAIN_CSV="/glade/work/dcalhoun/WeatherLMM/manifests/manifest_train.csv"
+EVAL_CSV="/glade/work/dcalhoun/WeatherLMM/manifests/manifest_test.csv"
+OUTPUT_DIR="/glade/work/dcalhoun/WeatherLMM/checkpoints/weather_lora_$(date +%Y%m%d_%H%M%S)"
+
+# Create output directory
+mkdir -p "$OUTPUT_DIR"
+
+# Run training
+python -u LoRA_Training.py \
+    --model_name Qwen/Qwen2.5-VL-3B-Instruct \
+    --train_csv "$TRAIN_CSV" \
+    --eval_csv "$EVAL_CSV" \
+    --output_dir "$OUTPUT_DIR" \
+    --num_train_epochs 3 \
+    --per_device_train_batch_size 1 \
+    --per_device_eval_batch_size 1 \
+    --learning_rate 1e-4 \
+    --warmup_ratio 0.03 \
+    --weight_decay 0.01 \
+    --gradient_accumulation_steps 4 \
+    --fp16 \
+    --logging_steps 10 \
+    --save_steps 500 \
+    --save_total_limit 3 \
+    --max_steps -1
+
+# Print completion information
+echo "=========================================="
+echo "End Time: $(date)"
+echo "Training completed. Output saved to: $OUTPUT_DIR"
+echo "=========================================="
