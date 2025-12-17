@@ -518,6 +518,19 @@ def main():
         if num_gpus == 1:
             print(f"\nSingle GPU detected. Using device_map='auto' for optimal memory usage.")
     
+    # When using device_map (model parallelism), prevent Accelerate from initializing distributed training
+    # Device_map splits model across GPUs, which is incompatible with DDP (data parallelism)
+    if device_map_strategy is not None and device_map_strategy != "cpu":
+        import os
+        # Set environment variables to prevent distributed initialization
+        os.environ["ACCELERATE_USE_CPU"] = "false"
+        os.environ["MASTER_ADDR"] = "localhost"
+        os.environ["MASTER_PORT"] = "29500"
+        # Most importantly: tell Accelerate this is NOT a distributed run
+        os.environ["LOCAL_RANK"] = "-1"
+        os.environ["RANK"] = "-1"
+        os.environ["WORLD_SIZE"] = "1"
+    
     # Load model with error handling
     print(f"Loading model: {args.model_name}")
     try:
@@ -609,6 +622,51 @@ def main():
             f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "A", "location": "LoRA_Training.py:317", "message": "TrainingArguments parameters check", "data": {"has_evaluation_strategy": "evaluation_strategy" in params, "has_eval_strategy": "eval_strategy" in params, "all_params": params[:20]}, "timestamp": __import__('time').time() * 1000}) + "\n")
     except Exception as e:
         pass
+    
+    # Log distributed state before TrainingArguments
+    try:
+        import torch.distributed as dist
+        is_distributed = dist.is_initialized() if hasattr(dist, 'is_initialized') else False
+        with open(log_path, 'a') as f:
+            f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "H1", "location": "LoRA_Training.py:before_training_args", "message": "Distributed state check", "data": {"num_gpus": num_gpus, "device_map_strategy": device_map_strategy if 'device_map_strategy' in locals() else None, "is_distributed_initialized": is_distributed, "torch_distributed_available": hasattr(torch.distributed, 'is_initialized')}, "timestamp": __import__('time').time() * 1000}) + "\n")
+    except Exception as e:
+        with open(log_path, 'a') as f:
+            f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "H1", "location": "LoRA_Training.py:before_training_args", "message": "Distributed state check failed", "data": {"error": str(e)}, "timestamp": __import__('time').time() * 1000}) + "\n")
+    # #endregion
+    
+    # Determine if we should use distributed training
+    # When using device_map (model parallelism), we should NOT use DDP (data parallelism)
+    # They are incompatible - device_map splits model across GPUs, DDP replicates model on each GPU
+    use_ddp = False
+    if num_gpus > 1 and device_map_strategy is None:
+        # Only use DDP if we have multiple GPUs AND we're NOT using device_map
+        use_ddp = True
+        print(f"\nUsing DistributedDataParallel (DDP) for data parallelism across {num_gpus} GPUs")
+    elif num_gpus > 1 and device_map_strategy is not None:
+        print(f"\nUsing model parallelism (device_map={device_map_strategy}). DDP disabled (incompatible with model parallelism).")
+        print("Model will be split across GPUs, but training runs in single-process mode.")
+    
+    # When using device_map, prevent Accelerate from initializing distributed training
+    if device_map_strategy is not None and device_map_strategy != "cpu":
+        import os
+        # Set environment variables to prevent distributed initialization
+        os.environ["LOCAL_RANK"] = "-1"
+        os.environ["RANK"] = "-1"
+        os.environ["WORLD_SIZE"] = "1"
+        # #region agent log
+        try:
+            with open(log_path, 'a') as f:
+                f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "H4", "location": "LoRA_Training.py:env_vars_set", "message": "Set env vars to disable DDP", "data": {"LOCAL_RANK": os.environ.get("LOCAL_RANK"), "RANK": os.environ.get("RANK"), "WORLD_SIZE": os.environ.get("WORLD_SIZE")}, "timestamp": __import__('time').time() * 1000}) + "\n")
+        except:
+            pass
+        # #endregion
+    
+    # #region agent log
+    try:
+        with open(log_path, 'a') as f:
+            f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "H2", "location": "LoRA_Training.py:ddp_decision", "message": "DDP usage decision", "data": {"use_ddp": use_ddp, "num_gpus": num_gpus, "device_map_strategy": device_map_strategy if 'device_map_strategy' in locals() else None}, "timestamp": __import__('time').time() * 1000}) + "\n")
+    except:
+        pass
     # #endregion
     
     training_args = TrainingArguments(
@@ -637,9 +695,15 @@ def main():
         gradient_checkpointing=True,  # Enable gradient checkpointing to save memory
         dataloader_pin_memory=False,  # Disable pin_memory to save memory
         optim="adamw_8bit" if args.use_8bit_optimizer else "adamw_torch",  # Use 8-bit optimizer if available
-        ddp_find_unused_parameters=False,  # Faster DDP training
-        ddp_backend="nccl" if torch.cuda.is_available() else "gloo",  # NCCL for multi-GPU
     )
+    
+    # #region agent log
+    try:
+        with open(log_path, 'a') as f:
+            f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "H3", "location": "LoRA_Training.py:after_training_args", "message": "TrainingArguments created", "data": {"use_ddp": use_ddp, "device_map_strategy": device_map_strategy if 'device_map_strategy' in locals() else None, "local_rank_env": os.environ.get("LOCAL_RANK", "not_set")}, "timestamp": __import__('time').time() * 1000}) + "\n")
+    except:
+        pass
+    # #endregion
     
     # #region agent log
     log_memory("LoRA_Training.py:before_trainer_init", "Memory before Trainer initialization", "MEM6")
