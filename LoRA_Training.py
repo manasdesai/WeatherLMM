@@ -21,18 +21,29 @@ from peft import LoraConfig, get_peft_model
 class ImageTextDataset(Dataset):
     def __init__(self, csv_path:str):
         self.df = pd.read_csv(csv_path)
-        self.image_columns = [
-            "press_level_200_hPA_path", "press_level_500_hPA_path", "press_level_700_hPA_path",
-            "press_level_850_hPA_path", "press_level_1000_hPA_path", "2m_temp_10m_wind_path",
-            "500_1000_hPA_Thickness_mean_sealevel_pressure_path", "wind_relative_humidity_200_hPA_path", "wind_relative_humidity_500_hPA_path",
-            "wind_relative_humidity_700_hPA_path", "wind_relative_humidity_850_hPA_path", "wind_relative_humidity_1000_hPA_path"
-        ] 
         
-        missing = [col for col in self.image_columns if col not in self.df.columns]
-        if missing:
-            raise ValueError(f"Missing columns in CSV: {missing}")
-        if "text" not in self.df.columns:
-            raise ValueError("Our CSV must contain these columns.")
+        # Support both formats:
+        # 1. Semicolon-separated image_paths column (from create_full_image_manifest.py)
+        # 2. Individual columns for each image path
+        if "image_paths" in self.df.columns:
+            # Format: semicolon-separated paths
+            self.use_semicolon_format = True
+            if "target_text" not in self.df.columns:
+                raise ValueError("CSV must contain 'target_text' column when using 'image_paths' format")
+        else:
+            # Format: individual columns
+            self.use_semicolon_format = False
+            self.image_columns = [
+                "press_level_200_hPA_path", "press_level_500_hPA_path", "press_level_700_hPA_path",
+                "press_level_850_hPA_path", "press_level_1000_hPA_path", "2m_temp_10m_wind_path",
+                "500_1000_hPA_Thickness_mean_sealevel_pressure_path", "wind_relative_humidity_200_hPA_path", "wind_relative_humidity_500_hPA_path",
+                "wind_relative_humidity_700_hPA_path", "wind_relative_humidity_850_hPA_path", "wind_relative_humidity_1000_hPA_path"
+            ] 
+            missing = [col for col in self.image_columns if col not in self.df.columns]
+            if missing:
+                raise ValueError(f"Missing columns in CSV: {missing}")
+            if "text" not in self.df.columns:
+                raise ValueError("CSV must contain 'text' column when using individual column format")
         
     def __len__(self):
         return len(self.df)
@@ -41,13 +52,26 @@ class ImageTextDataset(Dataset):
         row = self.df.iloc[idx]
 
         our_weather_images = []
-        for col in self.image_columns:
-            image_path = row[col]
-            if not os.path.exists(image_path):
-                raise FileNotFoundError(f"Image not found: {image_path}")
-
-            our_weather_images.append(Image.open(image_path).convert("RGB"))
-        text = row["text"]
+        
+        if self.use_semicolon_format:
+            # Parse semicolon-separated image paths
+            image_paths_str = row["image_paths"]
+            image_paths = [path.strip() for path in image_paths_str.split(';')]
+            
+            for image_path in image_paths:
+                if not os.path.exists(image_path):
+                    raise FileNotFoundError(f"Image not found: {image_path}")
+                our_weather_images.append(Image.open(image_path).convert("RGB"))
+            
+            text = row["target_text"]
+        else:
+            # Use individual columns
+            for col in self.image_columns:
+                image_path = row[col]
+                if not os.path.exists(image_path):
+                    raise FileNotFoundError(f"Image not found: {image_path}")
+                our_weather_images.append(Image.open(image_path).convert("RGB"))
+            text = row["text"]
 
         return {"image": our_weather_images, "text": text}
     
