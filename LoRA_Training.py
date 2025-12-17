@@ -68,22 +68,36 @@ class ImageTextDataset(Dataset):
         if self.use_semicolon_format:
             # Parse semicolon-separated image paths
             image_paths_str = row["image_paths"]
-            image_paths = [path.strip() for path in image_paths_str.split(';')]
+            if pd.isna(image_paths_str) or not image_paths_str:
+                raise ValueError(f"image_paths is empty or NaN in row {idx}")
+            image_paths = [path.strip() for path in str(image_paths_str).split(';') if path.strip()]
+            if len(image_paths) != 12:
+                raise ValueError(f"Expected 12 image paths, got {len(image_paths)} in row {idx}")
             
             for image_path in image_paths:
-                if not os.path.exists(image_path):
-                    raise FileNotFoundError(f"Image not found: {image_path}")
-                our_weather_images.append(Image.open(image_path).convert("RGB"))
+                if pd.isna(image_path) or not image_path or not os.path.exists(str(image_path)):
+                    raise FileNotFoundError(f"Image not found or path is empty: {image_path}")
+                try:
+                    our_weather_images.append(Image.open(str(image_path)).convert("RGB"))
+                except Exception as e:
+                    raise RuntimeError(f"Failed to load image {image_path}: {e}")
             
             text = row["target_text"]
+            if pd.isna(text):
+                raise ValueError(f"Text is NaN in row {idx}")
         else:
             # Use individual columns
             for col in self.image_columns:
                 image_path = row[col]
-                if not os.path.exists(image_path):
-                    raise FileNotFoundError(f"Image not found: {image_path}")
-                our_weather_images.append(Image.open(image_path).convert("RGB"))
+                if pd.isna(image_path) or not image_path or not os.path.exists(str(image_path)):
+                    raise FileNotFoundError(f"Image not found or path is empty: {image_path} (column: {col})")
+                try:
+                    our_weather_images.append(Image.open(str(image_path)).convert("RGB"))
+                except Exception as e:
+                    raise RuntimeError(f"Failed to load image {image_path} (column: {col}): {e}")
             text = row["text"]
+            if pd.isna(text):
+                raise ValueError(f"Text is NaN in row {idx}")
 
         return {"image": our_weather_images, "text": text}
     
@@ -264,7 +278,14 @@ def parse_args():
     parser.add_argument(
         "--save_steps",
         type=int,
-        default=500,
+        default=400,
+        help="Save checkpoint every N steps. Must be a multiple of eval_steps when load_best_model_at_end=True.",
+    )
+    parser.add_argument(
+        "--eval_steps",
+        type=int,
+        default=200,
+        help="Evaluate every N steps.",
     )
     parser.add_argument(
         "--save_total_limit",
@@ -296,14 +317,68 @@ def parse_args():
 
 def main():
     args = parse_args()
-        
-    model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-            args.model_name,
-            torch_dtype=(torch.float16 if args.fp16 else None),
-            device_map="auto",
-        )
-
-    processor = AutoProcessor.from_pretrained(args.model_name)
+    
+    # Validate input files exist
+    if not os.path.exists(args.train_csv):
+        raise FileNotFoundError(f"Training CSV not found: {args.train_csv}")
+    
+    if args.eval_csv and not os.path.exists(args.eval_csv):
+        raise FileNotFoundError(f"Evaluation CSV not found: {args.eval_csv}")
+    
+    # Create output directory
+    os.makedirs(args.output_dir, exist_ok=True)
+    print(f"Output directory: {args.output_dir}")
+    
+    # Load and validate datasets before model loading (faster failure)
+    print("Loading training dataset...")
+    train_dataset = ImageTextDataset(args.train_csv)
+    if len(train_dataset) == 0:
+        raise ValueError(f"Training dataset is empty: {args.train_csv}")
+    print(f"Training samples: {len(train_dataset)}")
+    
+    eval_dataset = None
+    if args.eval_csv:
+        print("Loading evaluation dataset...")
+        eval_dataset = ImageTextDataset(args.eval_csv)
+        if len(eval_dataset) == 0:
+            raise ValueError(f"Evaluation dataset is empty: {args.eval_csv}")
+        print(f"Evaluation samples: {len(eval_dataset)}")
+    
+    # Validate dataset content (check first few samples)
+    print("Validating dataset content...")
+    for i in range(min(3, len(train_dataset))):
+        sample = train_dataset[i]
+        if not sample["text"] or pd.isna(sample["text"]) or len(str(sample["text"]).strip()) == 0:
+            raise ValueError(f"Empty or NaN text found in training sample {i}")
+        if len(sample["image"]) != 12:
+            raise ValueError(f"Expected 12 images, got {len(sample['image'])} in training sample {i}")
+    
+    if eval_dataset:
+        for i in range(min(3, len(eval_dataset))):
+            sample = eval_dataset[i]
+            if not sample["text"] or pd.isna(sample["text"]) or len(str(sample["text"]).strip()) == 0:
+                raise ValueError(f"Empty or NaN text found in evaluation sample {i}")
+            if len(sample["image"]) != 12:
+                raise ValueError(f"Expected 12 images, got {len(sample['image'])} in evaluation sample {i}")
+    
+    print("Dataset validation passed.")
+    
+    # Load model with error handling
+    print(f"Loading model: {args.model_name}")
+    try:
+        model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+                args.model_name,
+                torch_dtype=(torch.float16 if args.fp16 else None),
+                device_map="auto",
+            )
+    except Exception as e:
+        raise RuntimeError(f"Failed to load model {args.model_name}: {e}")
+    
+    # Load processor with error handling
+    try:
+        processor = AutoProcessor.from_pretrained(args.model_name)
+    except Exception as e:
+        raise RuntimeError(f"Failed to load processor for {args.model_name}: {e}")
     
     if processor.tokenizer.pad_token is None:
         processor.tokenizer.pad_token = processor.tokenizer.eos_token
@@ -319,12 +394,35 @@ def main():
         target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "up_proj", "down_proj"],    
     )
     
-    model = get_peft_model(model, peft_config)
-    model.print_trainable_parameters()
+    # Apply LoRA with validation
+    try:
+        model = get_peft_model(model, peft_config)
+        model.print_trainable_parameters()
+    except Exception as e:
+        raise RuntimeError(f"Failed to apply LoRA configuration: {e}. Check that target_modules exist in the model.")
     
-    train_dataset = ImageTextDataset(args.train_csv)
-    eval_dataset = ImageTextDataset(args.eval_csv) if args.eval_csv else None
     data_collator = WeatherDataCollectorImageText(processor=processor)
+    
+    # Validate training configuration
+    if args.max_steps > 0 and args.num_train_epochs > 0:
+        print(f"Warning: Both max_steps ({args.max_steps}) and num_train_epochs ({args.num_train_epochs}) are set.")
+        print(f"max_steps will take precedence. Training will stop after {args.max_steps} steps.")
+    
+    # Validate and adjust save_steps/eval_steps relationship when load_best_model_at_end=True
+    load_best_model = eval_dataset is not None
+    save_steps = args.save_steps
+    eval_steps = args.eval_steps
+    
+    # Determine eval_strategy and save_strategy
+    eval_strategy = "steps" if eval_dataset is not None else "no"
+    save_strategy = eval_strategy if load_best_model else "steps"
+    
+    if load_best_model and save_steps % eval_steps != 0:
+        # Auto-adjust save_steps to be the next multiple of eval_steps
+        adjusted_save_steps = ((save_steps // eval_steps) + 1) * eval_steps
+        print(f"Warning: save_steps ({save_steps}) is not a multiple of eval_steps ({eval_steps}).")
+        print(f"Auto-adjusting save_steps to {adjusted_save_steps} to satisfy load_best_model_at_end requirement.")
+        save_steps = adjusted_save_steps
     
     # #region agent log
     import inspect
@@ -348,17 +446,17 @@ def main():
         fp16=args.fp16,
         bf16=args.bf16,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
-        eval_strategy="steps" if eval_dataset is not None else "no",
+        eval_strategy=eval_strategy,
         logging_dir=os.path.join(args.output_dir, "logs"),
-        save_strategy="steps",
+        save_strategy=save_strategy,
         dataloader_num_workers=4,
         logging_steps=args.logging_steps,
-        eval_steps=200,
-        save_steps=args.save_steps,
+        eval_steps=eval_steps if eval_strategy == "steps" else None,
+        save_steps=save_steps,
         save_total_limit=args.save_total_limit,
-        max_steps=args.max_steps,
-        load_best_model_at_end=True if eval_dataset is not None else False,
-        metric_for_best_model="eval_loss",
+        max_steps=args.max_steps if args.max_steps > 0 else -1,
+        load_best_model_at_end=load_best_model,
+        metric_for_best_model="eval_loss" if load_best_model else None,
         remove_unused_columns=False,
     )
     
@@ -370,11 +468,23 @@ def main():
         data_collator=data_collator,
     )
     
-    trainer.train()
+    # Train with error handling
+    try:
+        trainer.train()
+    except Exception as e:
+        print(f"\nTraining failed with error: {e}")
+        print(f"Partial checkpoints may be available in: {args.output_dir}")
+        raise
     
-    trainer.model.save_pretrained(args.output_dir)
-    processor.save_pretrained(args.output_dir)
-    print("Training complete. Model and processor saved to,", args.output_dir)
+    # Save final model
+    try:
+        trainer.model.save_pretrained(args.output_dir)
+        processor.save_pretrained(args.output_dir)
+        print(f"\nTraining complete. Model and processor saved to: {args.output_dir}")
+    except Exception as e:
+        print(f"\nWarning: Failed to save final model: {e}")
+        print(f"Checkpoints may still be available in: {args.output_dir}")
+        raise
     
 if __name__ == "__main__":
     main()
