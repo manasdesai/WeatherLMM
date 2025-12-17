@@ -20,11 +20,19 @@ import transformers
 from peft import LoraConfig, get_peft_model
 
 # #region agent log
-log_path = "/Users/dcalhoun/Desktop/Courses/Fall 2025/CMSC 723/Project/WeatherLMM/.cursor/debug.log"
+# log_path will be set in main() based on command-line arguments
+log_path = None
 
-def log_memory(location: str, message: str, hypothesis_id: str = "MEM"):
+def log_memory(location: str, message: str, hypothesis_id: str = "MEM", log_path: str = None):
     """Log GPU memory usage."""
+    if log_path is None:
+        return  # Skip logging if log_path not set
     try:
+        # Ensure directory exists
+        log_dir = os.path.dirname(log_path)
+        if log_dir:
+            os.makedirs(log_dir, exist_ok=True)
+        
         if torch.cuda.is_available():
             allocated = torch.cuda.memory_allocated() / 1024**3  # GB
             reserved = torch.cuda.memory_reserved() / 1024**3  # GB
@@ -57,17 +65,6 @@ def log_memory(location: str, message: str, hypothesis_id: str = "MEM"):
                 }) + "\n")
     except Exception as e:
         pass
-# #endregion
-
-# #region agent log
-import json
-import os
-log_path = "/Users/dcalhoun/Desktop/Courses/Fall 2025/CMSC 723/Project/WeatherLMM/.cursor/debug.log"
-try:
-    with open(log_path, 'a') as f:
-        f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "A", "location": "LoRA_Training.py:19", "message": "Transformers version check", "data": {"transformers_version": transformers.__version__}, "timestamp": __import__('time').time() * 1000}) + "\n")
-except Exception as e:
-    pass
 # #endregion
 
 #loading our dataset from our manifest file.
@@ -344,6 +341,18 @@ def parse_args():
         help="Where to save LoRA adapter + config.",
     )
     parser.add_argument(
+        "--logging_dir",
+        type=str,
+        default=None,
+        help="Directory for TensorBoard logs. Defaults to {output_dir}/logs if not specified.",
+    )
+    parser.add_argument(
+        "--debug_log_path",
+        type=str,
+        default=None,
+        help="Path for debug log file. Defaults to {output_dir}/debug.log if not specified.",
+    )
+    parser.add_argument(
         "--num_train_epochs",
         type=int,
         default=3,
@@ -448,6 +457,18 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
     print(f"Output directory: {args.output_dir}")
     
+    # Set debug log path (configurable via command-line, defaults to output_dir/debug.log)
+    global log_path
+    if args.debug_log_path:
+        log_path = args.debug_log_path
+    else:
+        log_path = os.path.join(args.output_dir, "debug.log")
+    
+    # Ensure log directory exists
+    log_dir = os.path.dirname(log_path)
+    if log_dir:
+        os.makedirs(log_dir, exist_ok=True)
+    
     # Load and validate datasets before model loading (faster failure)
     print("Loading training dataset...")
     train_dataset = ImageTextDataset(args.train_csv, max_samples=args.max_train_samples)
@@ -487,7 +508,7 @@ def main():
     print("Dataset validation passed.")
     
     # #region agent log
-    log_memory("LoRA_Training.py:before_model_load", "Memory before model loading", "MEM1")
+    log_memory("LoRA_Training.py:before_model_load", "Memory before model loading", "MEM1", log_path)
     # #endregion
     
     # Check available GPUs
@@ -540,14 +561,14 @@ def main():
                 device_map=device_map_strategy,
             )
         # #region agent log
-        log_memory("LoRA_Training.py:after_model_load", "Memory after model loading", "MEM2")
+        log_memory("LoRA_Training.py:after_model_load", "Memory after model loading", "MEM2", log_path)
         # #endregion
         
         # Clear cache after model loading
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
             # #region agent log
-            log_memory("LoRA_Training.py:after_cache_clear", "Memory after cache clear", "MEM3")
+            log_memory("LoRA_Training.py:after_cache_clear", "Memory after cache clear", "MEM3", log_path)
             # #endregion
     except Exception as e:
         raise RuntimeError(f"Failed to load model {args.model_name}: {e}")
@@ -577,7 +598,7 @@ def main():
         model = get_peft_model(model, peft_config)
         model.print_trainable_parameters()
         # #region agent log
-        log_memory("LoRA_Training.py:after_lora", "Memory after LoRA application", "MEM4")
+        log_memory("LoRA_Training.py:after_lora", "Memory after LoRA application", "MEM4", log_path)
         # #endregion
         
         # Clear cache after LoRA
@@ -589,7 +610,7 @@ def main():
     data_collator = WeatherDataCollectorImageText(processor=processor)
     
     # #region agent log
-    log_memory("LoRA_Training.py:before_training_args", "Memory before TrainingArguments", "MEM5")
+    log_memory("LoRA_Training.py:before_training_args", "Memory before TrainingArguments", "MEM5", log_path)
     # #endregion
     
     # Validate training configuration
@@ -681,7 +702,7 @@ def main():
         bf16=args.bf16,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         eval_strategy=eval_strategy,
-        logging_dir=os.path.join(args.output_dir, "logs"),
+        logging_dir=args.logging_dir if args.logging_dir is not None else os.path.join(args.output_dir, "logs"),
         save_strategy=save_strategy,
         dataloader_num_workers=0,  # Reduced from 4 to 0 to save memory (prevents parallel data loading)
         logging_steps=args.logging_steps,
@@ -706,7 +727,7 @@ def main():
     # #endregion
     
     # #region agent log
-    log_memory("LoRA_Training.py:before_trainer_init", "Memory before Trainer initialization", "MEM6")
+    log_memory("LoRA_Training.py:before_trainer_init", "Memory before Trainer initialization", "MEM6", log_path)
     # #endregion
     
     trainer = Trainer(
@@ -718,7 +739,7 @@ def main():
     )
     
     # #region agent log
-    log_memory("LoRA_Training.py:before_training", "Memory before training starts", "MEM7")
+    log_memory("LoRA_Training.py:before_training", "Memory before training starts", "MEM7", log_path)
     # #endregion
     
     # Check available memory before training
@@ -799,7 +820,7 @@ def main():
     try:
         trainer.train()
         # #region agent log
-        log_memory("LoRA_Training.py:after_training", "Memory after training completes", "MEM8")
+        log_memory("LoRA_Training.py:after_training", "Memory after training completes", "MEM8", log_path)
         # #endregion
     except Exception as e:
         print(f"\nTraining failed with error: {e}")
