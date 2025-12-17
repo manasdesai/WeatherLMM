@@ -13,7 +13,7 @@ echo "Loading modules..."
 module purge
 module load ncarenv-basic/25.10
 module load conda
-module load cuda/12.2.0
+module load cuda/12.9.0
 
 # Check if we're on Derecho
 if [[ ! "$HOSTNAME" == *"derecho"* ]]; then
