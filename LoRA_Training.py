@@ -521,8 +521,8 @@ def main():
     # When using device_map (model parallelism), prevent Accelerate from initializing distributed training
     # Device_map splits model across GPUs, which is incompatible with DDP (data parallelism)
     if device_map_strategy is not None and device_map_strategy != "cpu":
-        import os
         # Set environment variables to prevent distributed initialization
+        # os is already imported at the top of the file
         os.environ["ACCELERATE_USE_CPU"] = "false"
         os.environ["MASTER_ADDR"] = "localhost"
         os.environ["MASTER_PORT"] = "29500"
@@ -648,8 +648,8 @@ def main():
     
     # When using device_map, prevent Accelerate from initializing distributed training
     if device_map_strategy is not None and device_map_strategy != "cpu":
-        import os
         # Set environment variables to prevent distributed initialization
+        # os is already imported at the top of the file
         os.environ["LOCAL_RANK"] = "-1"
         os.environ["RANK"] = "-1"
         os.environ["WORLD_SIZE"] = "1"
