@@ -514,7 +514,13 @@ def parse_args():
         "--device_map",
         type=str,
         default="auto",
-        help="Device map for model parallelism. Options: 'auto', 'balanced', 'balanced_low_0', or custom dict. Use 'auto' for automatic distribution.",
+        help=(
+            "Device map for model parallelism. Options: "
+            "'auto' (distribute across all GPUs), "
+            "'cuda:0' or 'cuda' (put full model on GPU 0, enables data parallelism), "
+            "'balanced', 'balanced_low_0', or custom dict. "
+            "Use 'cuda:0' for single-GPU or data parallelism (model replicated on each GPU)."
+        ),
     )
     return parser.parse_args()
 
@@ -601,14 +607,28 @@ def main():
             # Default to bfloat16 if available, otherwise float32
             model_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float32
 
-        # Use device_map to distribute model across all available GPUs
-        # This spreads model layers across GPUs to handle large vision activations
-        device_map_strategy = args.device_map if num_gpus > 0 else None
+        # Handle device_map strategy
+        # - "auto": Model parallelism - distributes layers across all GPUs
+        # - "cuda:0" or "cuda": Data parallelism - full model on GPU 0 (can use multiple GPUs for data)
+        # - None: Single GPU or CPU
+        device_map_strategy = None
+        if num_gpus > 0:
+            if args.device_map.lower() in ['cuda', 'cuda:0']:
+                # Put full model on GPU 0 - enables data parallelism
+                device_map_strategy = 'cuda:0'
+                print(f"Using data parallelism: Full model on GPU 0 (can use {num_gpus} GPUs for data parallel training)")
+            elif args.device_map.lower() == 'auto':
+                # Model parallelism - distribute layers across GPUs
+                device_map_strategy = 'auto'
+                print(f"Using model parallelism: Distributing model layers across {num_gpus} GPUs")
+            else:
+                device_map_strategy = args.device_map
+                print(f"Using custom device_map: {args.device_map}")
 
         model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
             args.model_name,
             torch_dtype=model_dtype,
-            device_map=device_map_strategy,  # Distribute model layers across all 4 GPUs
+            device_map=device_map_strategy,
         )
 
         # Enable CUDA optimizations for faster training
@@ -616,14 +636,22 @@ def main():
             torch.backends.cudnn.benchmark = True
             torch.backends.cuda.matmul.allow_tf32 = True
 
-        # Print device placement to verify multi-GPU distribution
-        if hasattr(model, 'hf_device_map'):
-            print("\nModel layer distribution across GPUs:")
+        # Print device placement to verify model distribution
+        if hasattr(model, 'hf_device_map') and model.hf_device_map:
+            print("\nModel layer distribution across devices:")
             device_counts = {}
             for device in model.hf_device_map.values():
                 device_counts[device] = device_counts.get(device, 0) + 1
             for device, count in sorted(device_counts.items()):
                 print(f"  {device}: {count} layers")
+            if len(device_counts) == 1:
+                device = list(device_counts.keys())[0]
+                print(f"  → Full model on {device} (data parallelism ready)")
+            else:
+                print(f"  → Model split across {len(device_counts)} devices (model parallelism)")
+        elif hasattr(model, 'device'):
+            print(f"\nModel on device: {model.device}")
+            print(f"  → Full model on single device")
 
         # Clear cache after model loading
         torch.cuda.empty_cache()
@@ -674,6 +702,38 @@ def main():
                 "Check that `target_modules` match the Qwen2.5-VL architecture, or "
                 "update `peft`/`transformers` to a compatible version."
             )
+        
+        # Enable input gradients - required for gradient checkpointing and proper gradient flow
+        # This ensures input embeddings have requires_grad=True for backpropagation
+        # When using device_map="auto" with gradient checkpointing, this is critical for gradients to flow
+        try:
+            # Try calling on PEFT model wrapper (delegates to base model)
+            if hasattr(model, 'enable_input_require_grads'):
+                model.enable_input_require_grads()
+            # If PEFT model, try accessing base model
+            elif hasattr(model, 'get_base_model'):
+                base_model = model.get_base_model()
+                if hasattr(base_model, 'enable_input_require_grads'):
+                    base_model.enable_input_require_grads()
+            # Fallback: manually enable gradients on input embeddings
+            elif hasattr(model, 'get_input_embeddings'):
+                embeddings = model.get_input_embeddings()
+                if embeddings is not None:
+                    for param in embeddings.parameters():
+                        param.requires_grad = True
+        except Exception as e:
+            print(f"Warning: Could not enable input gradients via standard method: {e}")
+            print("Attempting fallback method...")
+            # Final fallback
+            if hasattr(model, 'get_input_embeddings'):
+                try:
+                    embeddings = model.get_input_embeddings()
+                    if embeddings is not None:
+                        for param in embeddings.parameters():
+                            param.requires_grad = True
+                        print("Successfully enabled input gradients via fallback method")
+                except Exception as e2:
+                    print(f"Warning: Fallback method also failed: {e2}")
         
         # Report GPU memory usage across all GPUs after LoRA
         if torch.cuda.is_available():
@@ -770,6 +830,49 @@ def main():
                 print(f"  WARNING: Very low GPU memory ({free:.2f} GB free)")
 
         print(f"{'='*60}\n")
+        
+        # Analyze memory usage and provide recommendations
+        avg_reserved = sum(torch.cuda.memory_reserved(i) / 1024**3 for i in range(num_gpus)) / num_gpus
+        avg_total = sum(torch.cuda.get_device_properties(i).total_memory / 1024**3 for i in range(num_gpus)) / num_gpus
+        avg_free = avg_total - avg_reserved
+        usage_percent = (avg_reserved / avg_total) * 100
+        
+        print(f"\n{'='*60}")
+        print(f"Memory Usage Analysis & Recommendations")
+        print(f"{'='*60}")
+        print(f"Average GPU Memory Usage: {avg_reserved:.2f} GB / {avg_total:.2f} GB ({usage_percent:.1f}%)")
+        print(f"Average Free Memory: {avg_free:.2f} GB per GPU")
+        print(f"\nCurrent Configuration:")
+        print(f"  - per_device_train_batch_size: {args.per_device_train_batch_size}")
+        print(f"  - gradient_accumulation_steps: {args.gradient_accumulation_steps}")
+        print(f"  - Effective batch size: {args.per_device_train_batch_size * args.gradient_accumulation_steps * num_gpus}")
+        print(f"  - image_size: {args.image_size if args.image_size else 'Original resolution'}")
+        print(f"  - gradient_checkpointing: {args.gradient_checkpointing}")
+        
+        # Provide recommendations based on available memory
+        recommendations = []
+        if avg_free > 30:  # More than 30GB free per GPU
+            recommendations.append(f"  ⚠️  VERY LOW memory usage ({usage_percent:.1f}%) - Consider optimizing for speed:")
+            recommendations.append(f"     • Increase batch_size: Try --per_device_train_batch_size {min(4, args.per_device_train_batch_size * 2)}")
+            recommendations.append(f"     • Increase image_size: Try --image_size {min(512, (args.image_size or 448) + 64) if args.image_size else 448}")
+            if args.gradient_checkpointing:
+                recommendations.append(f"     • Disable gradient_checkpointing for faster training (you have plenty of memory)")
+            recommendations.append(f"     • Current effective batch: {args.per_device_train_batch_size * args.gradient_accumulation_steps * num_gpus}")
+            recommendations.append(f"     • Could safely increase to: {min(4, args.per_device_train_batch_size * 2) * args.gradient_accumulation_steps * num_gpus}")
+        elif avg_free > 15:  # More than 15GB free per GPU
+            recommendations.append(f"  ℹ️  Low memory usage ({usage_percent:.1f}%) - Some optimization possible:")
+            recommendations.append(f"     • Could try increasing batch_size to {min(2, args.per_device_train_batch_size + 1)}")
+            recommendations.append(f"     • Could increase gradient_accumulation_steps for larger effective batch")
+        elif avg_free > 5:  # More than 5GB free per GPU
+            recommendations.append(f"  ✓  Moderate memory usage ({usage_percent:.1f}%) - Configuration looks reasonable")
+        else:
+            recommendations.append(f"  ⚠️  High memory usage ({usage_percent:.1f}%) - Monitor closely during training")
+        
+        if recommendations:
+            print(f"\nRecommendations:")
+            for rec in recommendations:
+                print(rec)
+        print(f"{'='*60}\n")
 
         # Clear cache before training
         torch.cuda.empty_cache()
@@ -783,6 +886,22 @@ def main():
         print(f"\nTraining failed with error: {e}")
         print(f"Partial checkpoints may be available in: {args.output_dir}")
         raise
+    
+    # Report peak memory usage after training
+    if torch.cuda.is_available():
+        print(f"\n{'='*60}")
+        print(f"Peak GPU Memory Usage After Training")
+        print(f"{'='*60}")
+        for i in range(num_gpus):
+            peak_allocated = torch.cuda.max_memory_allocated(i) / 1024**3  # GB
+            peak_reserved = torch.cuda.max_memory_reserved(i) / 1024**3  # GB
+            total = torch.cuda.get_device_properties(i).total_memory / 1024**3  # GB
+            peak_usage_percent = (peak_reserved / total) * 100
+            
+            print(f"GPU {i}:")
+            print(f"  Peak Allocated: {peak_allocated:.2f} GB")
+            print(f"  Peak Reserved: {peak_reserved:.2f} GB ({peak_usage_percent:.1f}% of {total:.2f} GB)")
+        print(f"{'='*60}\n")
     
     # Save final model
     try:
