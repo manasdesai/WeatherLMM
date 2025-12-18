@@ -63,6 +63,68 @@ class ImageTextDataset(Dataset):
             if "text" not in self.df.columns:
                 raise ValueError("CSV must contain 'text' column when using individual column format")
         
+        # Filter out invalid samples (missing images) before training
+        original_len = len(self.df)
+        self.df = self._filter_valid_samples(self.df)
+        filtered_count = original_len - len(self.df)
+        if filtered_count > 0:
+            print(f"Filtered out {filtered_count} samples with missing images (from {original_len} total). Remaining: {len(self.df)} valid samples.")
+    
+    def _filter_valid_samples(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Filter out rows where any image file is missing or invalid.
+        Returns a new DataFrame with only valid samples.
+        """
+        valid_indices = []
+        
+        for idx in range(len(df)):
+            row = df.iloc[idx]
+            is_valid = True
+            
+            try:
+                if self.use_semicolon_format:
+                    # Check semicolon-separated format
+                    image_paths_str = row["image_paths"]
+                    if pd.isna(image_paths_str) or not image_paths_str:
+                        is_valid = False
+                    else:
+                        image_paths = [path.strip() for path in str(image_paths_str).split(';') if path.strip()]
+                        if len(image_paths) != 12:
+                            is_valid = False
+                        else:
+                            # Check all paths exist
+                            for image_path in image_paths:
+                                if pd.isna(image_path) or not image_path or not os.path.exists(str(image_path)):
+                                    is_valid = False
+                                    break
+                    
+                    # Check text is valid
+                    if is_valid:
+                        text = row["target_text"]
+                        if pd.isna(text) or not str(text).strip():
+                            is_valid = False
+                else:
+                    # Check individual column format
+                    for col in self.image_columns:
+                        image_path = row[col]
+                        if pd.isna(image_path) or not image_path or not os.path.exists(str(image_path)):
+                            is_valid = False
+                            break
+                    
+                    # Check text is valid
+                    if is_valid:
+                        text = row["text"]
+                        if pd.isna(text) or not str(text).strip():
+                            is_valid = False
+            except Exception as e:
+                # If any error occurs during validation, skip this sample
+                is_valid = False
+            
+            if is_valid:
+                valid_indices.append(idx)
+        
+        return df.iloc[valid_indices].reset_index(drop=True)
+        
     def __len__(self):
         return len(self.df)
     
@@ -88,37 +150,43 @@ class ImageTextDataset(Dataset):
             # Parse semicolon-separated image paths
             image_paths_str = row["image_paths"]
             if pd.isna(image_paths_str) or not image_paths_str:
-                raise ValueError(f"image_paths is empty or NaN in row {idx}")
+                raise ValueError(f"image_paths is empty or NaN in row {idx} (should have been filtered)")
             image_paths = [path.strip() for path in str(image_paths_str).split(';') if path.strip()]
             if len(image_paths) != 12:
-                raise ValueError(f"Expected 12 image paths, got {len(image_paths)} in row {idx}")
+                raise ValueError(f"Expected 12 image paths, got {len(image_paths)} in row {idx} (should have been filtered)")
             
             for image_path in image_paths:
-                if pd.isna(image_path) or not image_path or not os.path.exists(str(image_path)):
-                    raise FileNotFoundError(f"Image not found or path is empty: {image_path}")
+                # Note: Files should already be validated in __init__, but check again in case files were deleted
+                if pd.isna(image_path) or not image_path:
+                    raise ValueError(f"Image path is empty in row {idx} (should have been filtered)")
+                if not os.path.exists(str(image_path)):
+                    raise FileNotFoundError(f"Image file was deleted after dataset initialization: {image_path} (row {idx})")
                 try:
                     our_weather_images.append(_load_image(image_path))
                     image_paths_list.append(image_path)
                 except Exception as e:
-                    raise RuntimeError(f"Failed to load image {image_path}: {e}")
+                    raise RuntimeError(f"Failed to load image {image_path} (row {idx}): {e}")
             
             text = row["target_text"]
-            if pd.isna(text):
-                raise ValueError(f"Text is NaN in row {idx}")
+            if pd.isna(text) or not str(text).strip():
+                raise ValueError(f"Text is empty or NaN in row {idx} (should have been filtered)")
         else:
             # Use individual columns
             for col in self.image_columns:
                 image_path = row[col]
-                if pd.isna(image_path) or not image_path or not os.path.exists(str(image_path)):
-                    raise FileNotFoundError(f"Image not found or path is empty: {image_path} (column: {col})")
+                # Note: Files should already be validated in __init__, but check again in case files were deleted
+                if pd.isna(image_path) or not image_path:
+                    raise ValueError(f"Image path is empty in column {col}, row {idx} (should have been filtered)")
+                if not os.path.exists(str(image_path)):
+                    raise FileNotFoundError(f"Image file was deleted after dataset initialization: {image_path} (column: {col}, row {idx})")
                 try:
                     our_weather_images.append(_load_image(image_path))
                     image_paths_list.append(image_path)
                 except Exception as e:
-                    raise RuntimeError(f"Failed to load image {image_path} (column: {col}): {e}")
+                    raise RuntimeError(f"Failed to load image {image_path} (column: {col}, row {idx}): {e}")
             text = row["text"]
-            if pd.isna(text):
-                raise ValueError(f"Text is NaN in row {idx}")
+            if pd.isna(text) or not str(text).strip():
+                raise ValueError(f"Text is empty or NaN in row {idx} (should have been filtered)")
 
         return {"image": our_weather_images, "image_paths": image_paths_list, "text": text}
 
