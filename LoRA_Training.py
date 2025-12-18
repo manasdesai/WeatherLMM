@@ -483,13 +483,33 @@ def main():
         lora_dropout=0.05,
         bias="none",
         task_type="CAUSAL_LM",
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "up_proj", "down_proj"],    
+        # Target common projection MLP + attention modules in Qwen2.5-VL
+        # so that at least some parameters require gradients for LoRA.
+        target_modules=[
+            "q_proj",
+            "k_proj",
+            "v_proj",
+            "o_proj",
+            "gate_proj",
+            "up_proj",
+            "down_proj",
+        ],
     )
     
     # Apply LoRA with validation
     try:
         model = get_peft_model(model, peft_config)
         model.print_trainable_parameters()
+
+        # Sanity check: ensure we actually have trainable parameters.
+        trainable_params = [p for p in model.parameters() if p.requires_grad]
+        if len(trainable_params) == 0:
+            raise RuntimeError(
+                "LoRA configuration resulted in 0 trainable parameters. "
+                "This will cause the loss tensor to have no grad_fn and break backprop. "
+                "Check that `target_modules` match the Qwen2.5-VL architecture, or "
+                "update `peft`/`transformers` to a compatible version."
+            )
         
         # Clear cache after LoRA
         if torch.cuda.is_available():
