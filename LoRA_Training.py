@@ -342,6 +342,11 @@ def parse_args():
         default=4,
     )
     parser.add_argument(
+        "--gradient_checkpointing",
+        action="store_true",
+        help="Enable gradient checkpointing to save memory (can interact poorly with some PEFT setups).",
+    )
+    parser.add_argument(
         "--fp16",
         action="store_true",
         help="Use float16 training if supported.",
@@ -563,7 +568,7 @@ def main():
         load_best_model_at_end=load_best_model,
         metric_for_best_model="eval_loss" if load_best_model else None,
         remove_unused_columns=False,
-        gradient_checkpointing=True,  # Enable gradient checkpointing to save memory
+        gradient_checkpointing=args.gradient_checkpointing,
         dataloader_pin_memory=False,  # Disable pin_memory to save memory
         optim="adamw_8bit" if args.use_8bit_optimizer else "adamw_torch",  # Use 8-bit optimizer if available
     )
