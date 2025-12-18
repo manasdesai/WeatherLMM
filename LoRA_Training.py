@@ -270,7 +270,7 @@ class WeatherDataCollectorImageText:
             # Add description text
             content.append({
                 "type": "text",
-                "text": f"Map {i}: {description}",
+                "text": f"Map {i}: {description} ({img_path})",
             })
             
             # Add the image
@@ -282,7 +282,7 @@ class WeatherDataCollectorImageText:
         # Add final instruction
         content.append({
             "type": "text",
-            "text": "\nBased on these 12 forecast maps, provide a detailed weather forecast for the continental United States.",
+            "text": "\nForecast begins below.\n\nValid",
         })
         
         return content
