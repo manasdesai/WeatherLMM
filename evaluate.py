@@ -267,7 +267,8 @@ class WeatherForecastEvaluator:
 
         # Generate forecast with optimizations
         gen_start = time.time()
-        with torch.no_grad():
+        # Use inference_mode() instead of no_grad() for faster inference
+        with torch.inference_mode():
             # Get tokenizer for stopping criteria
             tokenizer = self.processor.tokenizer
             
@@ -318,12 +319,12 @@ class WeatherForecastEvaluator:
         total_time = time.time() - start_time
         # Only print timing for first sample to identify bottlenecks
         if not hasattr(self, '_timing_printed'):
-            print(f"  Timing breakdown (first sample): prep={prep_time:.2f}s, generation={gen_time:.2f}s, decode={decode_time:.2f}s, total={total_time:.2f}s")
-            if gen_time > 100:
-                print(f"  WARNING: Generation is very slow ({gen_time:.1f}s). This may be due to:")
-                print(f"    - Processing 12 images through vision encoder (expected: 30-60s)")
-                print(f"    - Generating many tokens (check if model is actually stopping early)")
-                print(f"    - GPU not being fully utilized")
+            print(f"\nTiming breakdown (first sample):")
+            print(f"     - Image prep: {prep_time:.2f}s")
+            print(f"     - Generation: {gen_time:.2f}s")
+            print(f"     - Decoding: {decode_time:.2f}s")
+            print(f"     - Total: {total_time:.2f}s")
+            
             self._timing_printed = True
         
         # Clear GPU cache periodically to prevent memory buildup
