@@ -146,6 +146,7 @@ python LoRA_Training.py \
     --train_csv ./manifests/manifest_train.csv \
     --eval_csv ./manifests/manifest_test.csv \
     --output_dir ./qwen2_5_vl_weather_lora \
+    --image_size 448 \
     --num_train_epochs 3 \
     --per_device_train_batch_size 1 \
     --gradient_accumulation_steps 4
@@ -159,6 +160,7 @@ python LoRA_Training.py \
     --train_csv ./manifests/manifest_train.csv \   # Training manifest
     --eval_csv ./manifests/manifest_test.csv \     # Optional: evaluation set
     --output_dir ./qwen2_5_vl_weather_lora \        # Output directory
+    --image_size 448 \                              # Optional: resize all images (e.g., 448 or 512)
     --num_train_epochs 3 \                          # Number of training epochs
     --per_device_train_batch_size 1 \               # Batch size per device
     --per_device_eval_batch_size 1 \               # Eval batch size
@@ -225,6 +227,7 @@ python LoRA_Training.py \
     --eval_csv ./manifests/manifest_test.csv \
     --output_dir ./checkpoints/weather_lora \
     --model_name Qwen/Qwen2.5-VL-3B-Instruct \
+    --image_size 448 \
     --num_train_epochs 3 \
     --per_device_train_batch_size 1 \
     --gradient_accumulation_steps 4 \
@@ -253,10 +256,11 @@ tensorboard --logdir ./checkpoints/weather_lora/logs
 - Higher if convergence is slow (loss decreases very slowly)
 
 ### 3. GPU Memory Management
-- Use smaller model (3B instead of 7B)
-- Reduce batch size
-- Use FP16/BF16 mixed precision (`--fp16` or `--bf16`)
-- Increase `gradient_accumulation_steps` to maintain effective batch size
+-- Use smaller model (3B instead of 7B)
+-- Reduce batch size
+-- Use FP16/BF16 mixed precision (`--fp16` or `--bf16`)
+-- Increase `gradient_accumulation_steps` to maintain effective batch size
+-- **Downscale images with `--image_size` (e.g., 448)** to reduce vision-tower activations
 
 ### 4. Monitoring Training
 - Watch loss values decrease over epochs
@@ -280,16 +284,19 @@ tensorboard --logdir ./checkpoints/weather_lora/logs
 ### Out of Memory (OOM)
 ```bash
 # Solutions:
-# 1. Use smaller model
+# 1. Downscale input images (strongest lever)
+--image_size 448
+
+# 2. Use smaller model
 --model_name Qwen/Qwen2.5-VL-3B-Instruct
 
-# 2. Reduce batch size
+# 3. Reduce batch size
 --per_device_train_batch_size 1
 
-# 3. Use gradient accumulation
+# 4. Use gradient accumulation
 --gradient_accumulation_steps 8
 
-# 4. Enable FP16
+# 5. Enable FP16
 --fp16
 ```
 

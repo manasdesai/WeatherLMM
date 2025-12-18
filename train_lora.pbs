@@ -4,7 +4,7 @@
 #PBS -j oe
 #PBS -k eod
 #PBS -q main
-#PBS -l select=1:ncpus=64:ngpus=1:mem=128
+#PBS -l select=1:ncpus=64:ngpus=4:mem=512
 #PBS -l walltime=01:00:00
 #PBS -m abe
 #PBS -M dcalhoun@umd.edu
@@ -23,8 +23,7 @@ conda activate weatherlmm
 # Change to the directory from which the job was submitted
 cd $PBS_O_WORKDIR
 
-# Set environment variables for multi-GPU
-# Don't restrict CUDA_VISIBLE_DEVICES - let all GPUs be visible
+# Set environment variables
 export NCCL_DEBUG=INFO
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
@@ -46,14 +45,13 @@ OUTPUT_DIR="/glade/u/home/dcalhoun/cmsc723/checkpoints/weather_lora_$(date +%Y%m
 # Create output directory
 mkdir -p "$OUTPUT_DIR"
 
-# Run training with multi-GPU support
-# Trainer will automatically detect multiple GPUs and use DistributedDataParallel
-# Model will be split across GPUs using device_map="auto"
+# Run training
 python -u LoRA_Training.py \
     --model_name Qwen/Qwen2.5-VL-3B-Instruct \
     --train_csv "$TRAIN_CSV" \
     --eval_csv "$EVAL_CSV" \
     --output_dir "$OUTPUT_DIR" \
+    --image_size 448 \
     --max_train_samples 100 \
     --max_eval_samples 20 \
     --num_train_epochs 3 \
@@ -79,7 +77,7 @@ echo "=========================================="
 # Print instructions for viewing logs
 echo ""
 echo "To monitor training progress in real-time, run:"
-echo "  tail -f weather_lmm_train_multi_gpu.o$PBS_JOBID"
+echo "  tail -f weatherlmm_train.o$PBS_JOBID"
 echo ""
 echo "TensorBoard logs are available at:"
 echo "  $OUTPUT_DIR/logs"

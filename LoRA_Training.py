@@ -21,7 +21,7 @@ from peft import LoraConfig, get_peft_model
 
 # loading our dataset from our manifest file.
 class ImageTextDataset(Dataset):
-    def __init__(self, csv_path:str, max_samples: int = None):
+    def __init__(self, csv_path:str, max_samples: int = None, image_size: int = None):
         """
         Initialize dataset from CSV.
         
@@ -30,6 +30,7 @@ class ImageTextDataset(Dataset):
             max_samples: Maximum number of samples to load (None = all samples). Useful for quick development.
         """
         self.df = pd.read_csv(csv_path)
+        self.image_size = image_size
         
         # Limit dataset size if specified (for quick development)
         if max_samples is not None and max_samples > 0:
@@ -67,6 +68,18 @@ class ImageTextDataset(Dataset):
         row = self.df.iloc[idx]
 
         our_weather_images = []
+
+        def _load_image(path: str) -> Image.Image:
+            """Load an image and optionally resize to a fixed square size.
+
+            Resizing all 12 images to a smaller resolution (e.g., 448x448 or 512x512)
+            drastically reduces GPU memory usage in the vision tower while keeping
+            the rest of the training pipeline consistent.
+            """
+            img = Image.open(str(path)).convert("RGB")
+            if self.image_size is not None and self.image_size > 0:
+                img = img.resize((self.image_size, self.image_size), Image.BICUBIC)
+            return img
         
         if self.use_semicolon_format:
             # Parse semicolon-separated image paths
@@ -81,7 +94,7 @@ class ImageTextDataset(Dataset):
                 if pd.isna(image_path) or not image_path or not os.path.exists(str(image_path)):
                     raise FileNotFoundError(f"Image not found or path is empty: {image_path}")
                 try:
-                    our_weather_images.append(Image.open(str(image_path)).convert("RGB"))
+                    our_weather_images.append(_load_image(image_path))
                 except Exception as e:
                     raise RuntimeError(f"Failed to load image {image_path}: {e}")
             
@@ -95,7 +108,7 @@ class ImageTextDataset(Dataset):
                 if pd.isna(image_path) or not image_path or not os.path.exists(str(image_path)):
                     raise FileNotFoundError(f"Image not found or path is empty: {image_path} (column: {col})")
                 try:
-                    our_weather_images.append(Image.open(str(image_path)).convert("RGB"))
+                    our_weather_images.append(_load_image(image_path))
                 except Exception as e:
                     raise RuntimeError(f"Failed to load image {image_path} (column: {col}): {e}")
             text = row["text"]
@@ -259,6 +272,17 @@ def parse_args():
         default=None,
         help="Directory for TensorBoard logs. Defaults to {output_dir}/logs if not specified.",
     )
+    parser.add_argument(
+        "--image_size",
+        type=int,
+        default=None,
+        help=(
+            "Optional square resize for all input images before feeding them to Qwen's "
+            "vision encoder (e.g., 448 or 512). "
+            "Smaller values significantly reduce GPU memory usage. "
+            "If None, original image resolution is used."
+        ),
+    )
 
     parser.add_argument(
         "--num_train_epochs",
@@ -367,7 +391,11 @@ def main():
     
     # Load and validate datasets before model loading (faster failure)
     print("Loading training dataset...")
-    train_dataset = ImageTextDataset(args.train_csv, max_samples=args.max_train_samples)
+    train_dataset = ImageTextDataset(
+        args.train_csv,
+        max_samples=args.max_train_samples,
+        image_size=args.image_size,
+    )
     if len(train_dataset) == 0:
         raise ValueError(f"Training dataset is empty: {args.train_csv}")
     print(f"Training samples: {len(train_dataset)}")
@@ -377,7 +405,11 @@ def main():
     eval_dataset = None
     if args.eval_csv:
         print("Loading evaluation dataset...")
-        eval_dataset = ImageTextDataset(args.eval_csv, max_samples=args.max_eval_samples)
+        eval_dataset = ImageTextDataset(
+            args.eval_csv,
+            max_samples=args.max_eval_samples,
+            image_size=args.image_size,
+        )
         if len(eval_dataset) == 0:
             raise ValueError(f"Evaluation dataset is empty: {args.eval_csv}")
         print(f"Evaluation samples: {len(eval_dataset)}")
