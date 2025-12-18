@@ -242,9 +242,11 @@ class WeatherForecastEvaluator:
             generated_ids = self.model.generate(**generate_kwargs)
 
         # Decode output
+        # inputs is a dict, so access input_ids as a key
+        input_ids = inputs["input_ids"]
         generated_ids_trimmed = [
             out_ids[len(in_ids):]
-            for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+            for in_ids, out_ids in zip(input_ids, generated_ids)
         ]
 
         output_text = self.processor.batch_decode(
