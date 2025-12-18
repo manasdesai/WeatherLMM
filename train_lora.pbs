@@ -4,8 +4,8 @@
 #PBS -j oe
 #PBS -k eod
 #PBS -q main
-#PBS -l select=1:ncpus=64:ngpus=4:mem=512
-#PBS -l walltime=01:00:00
+#PBS -l select=1:ncpus=64:ngpus=4:mem=128gb
+#PBS -l walltime=08:00:00
 #PBS -m abe
 #PBS -M dcalhoun@umd.edu
 
@@ -15,7 +15,6 @@ module load ncarenv-basic/25.10
 module load conda
 module load cuda/12.9.0
 module load intel/2025.2.1
-module load openmpi/5.0.8
 
 # Activate your Conda environment
 conda activate weatherlmm
@@ -40,7 +39,7 @@ echo "=========================================="
 # Set paths
 TRAIN_CSV="/glade/u/home/dcalhoun/cmsc723/manifests/manifest_train.csv"
 EVAL_CSV="/glade/u/home/dcalhoun/cmsc723/manifests/manifest_test.csv"
-OUTPUT_DIR="/glade/u/home/dcalhoun/cmsc723/checkpoints/weather_lora_$(date +%Y%m%d_%H%M%S)"
+OUTPUT_DIR="/glade/derecho/scratch/dcalhoun/checkpoints/weather_lora_$(date +%Y%m%d_%H%M%S)"
 
 # Create output directory
 mkdir -p "$OUTPUT_DIR"
@@ -52,18 +51,16 @@ python -u LoRA_Training.py \
     --eval_csv "$EVAL_CSV" \
     --output_dir "$OUTPUT_DIR" \
     --image_size 336 \
-    --max_train_samples 100 \
-    --max_eval_samples 20 \
-    --num_train_epochs 3 \
+    --num_train_epochs 4 \
     --per_device_train_batch_size 1 \
     --per_device_eval_batch_size 1 \
     --learning_rate 1e-4 \
     --warmup_ratio 0.03 \
     --weight_decay 0.01 \
-    --gradient_accumulation_steps 2 \
+    --gradient_accumulation_steps 16 \
     --gradient_checkpointing \
     --bf16 \
-    --logging_steps 10 \
+    --logging_steps 100 \
     --save_steps 400 \
     --save_total_limit 3 \
     --max_steps -1 \
@@ -74,12 +71,3 @@ echo "=========================================="
 echo "End Time: $(date)"
 echo "Training completed. Output saved to: $OUTPUT_DIR"
 echo "=========================================="
-
-# Print instructions for viewing logs
-echo ""
-echo "To monitor training progress in real-time, run:"
-echo "  tail -f weatherlmm_train.o$PBS_JOBID"
-echo ""
-echo "TensorBoard logs are available at:"
-echo "  $OUTPUT_DIR/logs"
-echo ""
