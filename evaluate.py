@@ -9,10 +9,12 @@ This script evaluates a fine-tuned Qwen2.5-VL model on a test set by:
 
 Usage:
     # Evaluate LoRA fine-tuned model (greedy decoding - deterministic)
+    # IMPORTANT: Use --image_size 448 to match training (much faster!)
     python evaluate.py \
         --test_csv ./manifests/manifest_test.csv \
         --model_path ./checkpoints/weather_lora \
         --output_dir ./evaluation_results \
+        --image_size 448 \
         --batch_size 1
 
     # Evaluate with sampling (for more diverse outputs)
@@ -20,6 +22,7 @@ Usage:
         --test_csv ./manifests/manifest_test.csv \
         --model_path ./checkpoints/weather_lora \
         --output_dir ./evaluation_results \
+        --image_size 448 \
         --do_sample \
         --temperature 0.7 \
         --top_p 0.9
@@ -29,6 +32,7 @@ Usage:
         --test_csv ./manifests/manifest_test.csv \
         --model_name Qwen/Qwen2.5-VL-3B-Instruct \
         --output_dir ./evaluation_results \
+        --image_size 448 \
         --batch_size 1
 """
 
@@ -89,7 +93,8 @@ class WeatherForecastEvaluator:
         model_name: str = "Qwen/Qwen2.5-VL-3B-Instruct",
         model_path: Optional[str] = None,
         device: str = "cuda",
-        max_new_tokens: int = 1500
+        max_new_tokens: int = 1500,
+        image_size: Optional[int] = 448
     ):
         """
         Initialize the evaluator.
@@ -99,6 +104,9 @@ class WeatherForecastEvaluator:
             model_path: Path to fine-tuned model directory (LoRA checkpoint)
             device: Device to run inference on
             max_new_tokens: Maximum tokens to generate
+            image_size: Optional square resize for all input images (e.g., 448). 
+                       Should match training image_size for consistency. 
+                       If None, original image resolution is used.
         """
         # Check CUDA availability and set device
         cuda_available = torch.cuda.is_available()
@@ -110,6 +118,10 @@ class WeatherForecastEvaluator:
             self.device = device if cuda_available else "cpu"
         
         self.max_new_tokens = max_new_tokens
+        self.image_size = image_size
+        
+        if image_size:
+            print(f"Image resizing enabled: {image_size}x{image_size} (matching training)")
 
         # Print GPU information
         if cuda_available:
@@ -149,6 +161,22 @@ class WeatherForecastEvaluator:
 
         self.model.eval()
         
+        # Optimize model for inference if torch.compile is available (PyTorch 2.0+)
+        # Note: torch.compile may not work well with LoRA/PEFT models, so we skip it for now
+        # If you want to try it, uncomment below, but test carefully
+        # try:
+        #     if hasattr(torch, 'compile') and self.device == "cuda":
+        #         print("Optimizing model with torch.compile for faster inference...")
+        #         self.model = torch.compile(self.model, mode="reduce-overhead")
+        #         print("  Model compiled successfully")
+        # except Exception as e:
+        #     print(f"  Could not compile model: {e}")
+        
+        # Enable better memory efficiency
+        if self.device == "cuda":
+            torch.backends.cudnn.benchmark = True  # Optimize for consistent input sizes
+            torch.backends.cuda.matmul.allow_tf32 = True  # Use TF32 for faster matmuls on Ampere+
+        
         # Verify model device placement
         try:
             model_device = next(self.model.parameters()).device
@@ -182,6 +210,10 @@ class WeatherForecastEvaluator:
 
         Returns:
             Generated forecast text
+        
+        Note: Processing 12 images through the vision encoder is computationally
+        expensive. Expected time per sample: 60-120 seconds depending on GPU and
+        generation length. The timing breakdown will show where time is spent.
         """
         # Use the same prompt as training
         prompt = (
@@ -203,6 +235,9 @@ class WeatherForecastEvaluator:
         messages = [user_message]
 
         # Process inputs
+        import time
+        start_time = time.time()
+        
         text = self.processor.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True
         )
@@ -216,6 +251,8 @@ class WeatherForecastEvaluator:
             padding=True,
             return_tensors="pt",
         )
+        
+        prep_time = time.time() - start_time
 
         # Move inputs to the same device as the model
         try:
@@ -229,6 +266,7 @@ class WeatherForecastEvaluator:
                           for k, v in inputs.items()}
 
         # Generate forecast with optimizations
+        gen_start = time.time()
         with torch.no_grad():
             # Get tokenizer for stopping criteria
             tokenizer = self.processor.tokenizer
@@ -250,6 +288,8 @@ class WeatherForecastEvaluator:
                 pass
             
             generated_ids = self.model.generate(**generate_kwargs)
+        
+        gen_time = time.time() - gen_start
 
         # Decode output
         # inputs is a dict, so access input_ids as a key
@@ -258,12 +298,41 @@ class WeatherForecastEvaluator:
             out_ids[len(in_ids):]
             for in_ids, out_ids in zip(input_ids, generated_ids)
         ]
+        
+        # Check actual generation length (for debugging)
+        actual_tokens = len(generated_ids_trimmed[0])
+        if not hasattr(self, '_token_stats'):
+            self._token_stats = []
+        self._token_stats.append(actual_tokens)
+        if len(self._token_stats) == 1:
+            print(f"  Generated {actual_tokens} tokens (max allowed: {self.max_new_tokens})")
 
+        decode_start = time.time()
         output_text = self.processor.batch_decode(
             generated_ids_trimmed,
             skip_special_tokens=True,
             clean_up_tokenization_spaces=False
         )[0]
+        decode_time = time.time() - decode_start
+        
+        total_time = time.time() - start_time
+        # Only print timing for first sample to identify bottlenecks
+        if not hasattr(self, '_timing_printed'):
+            print(f"  Timing breakdown (first sample): prep={prep_time:.2f}s, generation={gen_time:.2f}s, decode={decode_time:.2f}s, total={total_time:.2f}s")
+            if gen_time > 100:
+                print(f"  WARNING: Generation is very slow ({gen_time:.1f}s). This may be due to:")
+                print(f"    - Processing 12 images through vision encoder (expected: 30-60s)")
+                print(f"    - Generating many tokens (check if model is actually stopping early)")
+                print(f"    - GPU not being fully utilized")
+            self._timing_printed = True
+        
+        # Clear GPU cache periodically to prevent memory buildup
+        if self.device == "cuda" and hasattr(self, '_sample_count'):
+            self._sample_count += 1
+            if self._sample_count % 10 == 0:
+                torch.cuda.empty_cache()
+        elif self.device == "cuda":
+            self._sample_count = 1
 
         return output_text.strip()
 
@@ -430,7 +499,11 @@ def evaluate(
                 if not os.path.exists(img_path):
                     print(f"Warning: Image file was deleted after manifest loading: {img_path}. Skipping sample {i}.")
                     break
-                images.append(Image.open(img_path).convert("RGB"))
+                img = Image.open(img_path).convert("RGB")
+                # Resize image if image_size is specified (should match training)
+                if evaluator.image_size is not None and evaluator.image_size > 0:
+                    img = img.resize((evaluator.image_size, evaluator.image_size), Image.BICUBIC)
+                images.append(img)
         except Exception as e:
             print(f"Error loading images for sample {i}: {e}. Skipping.")
             continue
@@ -597,6 +670,12 @@ def main():
         help="Maximum tokens to generate. Analysis of 16k+ forecasts: avg ~539 tokens, 99th percentile ~1292 tokens, max ~2009 tokens. Default 1500 covers 99%+ of forecasts while being ~25% faster than 2048."
     )
     parser.add_argument(
+        "--image_size",
+        type=int,
+        default=448,
+        help="Square resize for all input images (e.g., 448). Should match training image_size for consistency. Default: 448"
+    )
+    parser.add_argument(
         "--device",
         type=str,
         default="cuda",
@@ -647,7 +726,8 @@ def main():
         model_name=args.model_name,
         model_path=args.model_path,
         device=args.device,
-        max_new_tokens=args.max_new_tokens
+        max_new_tokens=args.max_new_tokens,
+        image_size=args.image_size
     )
     
     # Run evaluation

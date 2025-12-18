@@ -17,6 +17,17 @@ The evaluation script (`evaluate.py`) provides comprehensive evaluation of your 
 
 ## Prerequisites
 
+### Image Size Configuration
+
+**CRITICAL**: Always use `--image_size 448` (or whatever size you used during training)!
+
+- **Performance**: Processing 12 full-resolution images is 4-5x slower than resized images
+- **Consistency**: Must match training `--image_size` for fair evaluation
+- **Memory**: Smaller images use less GPU memory
+- **Default**: The script defaults to `448` to match typical training configurations
+
+If you trained with a different `--image_size` (e.g., 512), use that same value during evaluation.
+
 ### Install Evaluation Dependencies
 
 ```bash
@@ -43,11 +54,14 @@ nltk.download('wordnet')
 
 ### Evaluate Fine-Tuned LoRA Model (Greedy Decoding)
 
+**IMPORTANT**: Always use `--image_size 448` to match training (much faster evaluation!)
+
 ```bash
 python evaluate.py \
     --test_csv ./manifests/manifest_test.csv \
     --model_path ./checkpoints/weather_lora \
     --output_dir ./evaluation_results \
+    --image_size 448 \
     --max_samples 100
 ```
 
@@ -58,6 +72,7 @@ python evaluate.py \
     --test_csv ./manifests/manifest_test.csv \
     --model_path ./checkpoints/weather_lora \
     --output_dir ./evaluation_results \
+    --image_size 448 \
     --do_sample \
     --temperature 0.7 \
     --top_p 0.9 \
@@ -71,6 +86,7 @@ python evaluate.py \
     --test_csv ./manifests/manifest_test.csv \
     --model_name Qwen/Qwen2.5-VL-3B-Instruct \
     --output_dir ./evaluation_results/base_model \
+    --image_size 448 \
     --max_samples 100
 ```
 
@@ -84,9 +100,10 @@ python evaluate.py \
     --model_name MODEL_NAME \              # Base model (if --model_path not provided)
     --model_path PATH_TO_CHECKPOINT \      # Path to LoRA checkpoint directory
     --output_dir ./evaluation_results \     # Output directory
+    --image_size 448 \                      # Image resize size (should match training!)
     --batch_size 1 \                        # Batch size (currently only 1)
     --max_samples 100 \                    # Limit samples for quick testing
-    --max_new_tokens 2048 \                 # Max tokens to generate
+    --max_new_tokens 1500 \                 # Max tokens to generate (default: 1500)
     --device cuda \                         # Device (cuda or cpu)
     --do_sample \                           # Enable sampling (optional, default: greedy)
     --temperature 0.7 \                     # Sampling temperature (only with --do_sample)
@@ -103,9 +120,10 @@ python evaluate.py \
 | `--model_name` | No* | `Qwen/Qwen2.5-VL-3B-Instruct` | Base model name |
 | `--model_path` | No* | `None` | Path to LoRA checkpoint |
 | `--output_dir` | No | `./evaluation_results` | Output directory |
+| `--image_size` | No | `448` | **Square resize for images (should match training!)** |
 | `--batch_size` | No | `1` | Batch size (currently only 1) |
 | `--max_samples` | No | `None` | Limit number of samples |
-| `--max_new_tokens` | No | `2048` | Max generation length |
+| `--max_new_tokens` | No | `1500` | Max generation length (optimized based on forecast analysis) |
 | `--device` | No | `cuda` | Device to use |
 | `--do_sample` | No | `False` | Enable sampling instead of greedy decoding |
 | `--temperature` | No | `0.7` | Sampling temperature (only used with `--do_sample`) |
@@ -269,6 +287,7 @@ python evaluate.py \
     --test_csv ./manifests/manifest_test.csv \
     --model_name Qwen/Qwen2.5-VL-3B-Instruct \
     --output_dir ./evaluation_results/base_model \
+    --image_size 448 \
     --max_samples 100
 ```
 
@@ -289,6 +308,7 @@ python evaluate.py \
     --test_csv ./manifests/manifest_test.csv \
     --model_path ./checkpoints/weather_lora \
     --output_dir ./evaluation_results/fine_tuned \
+    --image_size 448 \
     --max_samples 100
 ```
 
@@ -315,19 +335,22 @@ To compare multiple checkpoints or configurations:
 python evaluate.py \
     --test_csv ./manifests/manifest_test.csv \
     --model_path ./checkpoints/weather_lora_epoch1 \
-    --output_dir ./evaluation_results/epoch1
+    --output_dir ./evaluation_results/epoch1 \
+    --image_size 448
 
 # Evaluate checkpoint 2
 python evaluate.py \
     --test_csv ./manifests/manifest_test.csv \
     --model_path ./checkpoints/weather_lora_epoch2 \
-    --output_dir ./evaluation_results/epoch2
+    --output_dir ./evaluation_results/epoch2 \
+    --image_size 448
 
 # Evaluate checkpoint 3
 python evaluate.py \
     --test_csv ./manifests/manifest_test.csv \
     --model_path ./checkpoints/weather_lora_epoch3 \
-    --output_dir ./evaluation_results/epoch3
+    --output_dir ./evaluation_results/epoch3 \
+    --image_size 448
 ```
 
 Then compare the `metrics.json` files from each directory.
@@ -343,6 +366,7 @@ For quick testing, use `--max_samples`:
 python evaluate.py \
     --test_csv ./manifests/manifest_test.csv \
     --model_path ./checkpoints/weather_lora \
+    --image_size 448 \
     --max_samples 10  # Quick test with 10 samples
 ```
 
@@ -352,7 +376,8 @@ Remove `--max_samples` for complete evaluation:
 ```bash
 python evaluate.py \
     --test_csv ./manifests/manifest_test.csv \
-    --model_path ./checkpoints/weather_lora
+    --model_path ./checkpoints/weather_lora \
+    --image_size 448
     # Evaluates all samples in test set
 ```
 
@@ -381,6 +406,7 @@ Adjust `--max_new_tokens` if predictions are too short or long:
 python evaluate.py \
     --test_csv ./manifests/manifest_test.csv \
     --model_path ./checkpoints/weather_lora \
+    --image_size 448 \
     --max_new_tokens 1024  # Shorter forecasts
 ```
 
@@ -392,6 +418,7 @@ If you're getting identical predictions, try sampling to see if the model produc
 python evaluate.py \
     --test_csv ./manifests/manifest_test.csv \
     --model_path ./checkpoints/weather_lora \
+    --image_size 448 \
     --do_sample \
     --temperature 0.7 \
     --top_p 0.9 \
@@ -409,6 +436,7 @@ For randomized evaluation order (useful for testing or when evaluating subsets):
 python evaluate.py \
     --test_csv ./manifests/manifest_test.csv \
     --model_path ./checkpoints/weather_lora \
+    --image_size 448 \
     --shuffle \
     --shuffle_seed 42  # Use same seed for reproducibility
 ```
@@ -454,9 +482,13 @@ pip install peft
 
 ### Slow Evaluation
 
+**CRITICAL**: Always use `--image_size 448` to match training! Processing full-resolution images is 4-5x slower.
+
+- **Use `--image_size 448`** (must match training `--image_size` for consistency and speed)
 - Use GPU (`--device cuda`)
 - Reduce `--max_samples` for quick tests
 - Use FP16/BF16 if supported (handled automatically)
+- Reduce `--max_new_tokens` if forecasts are typically shorter (default: 1500)
 
 ---
 
@@ -520,7 +552,8 @@ for model in "${MODELS[@]}"; do
     python evaluate.py \
         --test_csv ./manifests/manifest_test.csv \
         --model_path "$model" \
-        --output_dir "./evaluation_results/$(basename $model)"
+        --output_dir "./evaluation_results/$(basename $model)" \
+        --image_size 448
 done
 ```
 
@@ -598,7 +631,8 @@ After evaluation:
 python evaluate.py \
     --test_csv ./manifests/manifest_test.csv \
     --model_path ./checkpoints/weather_lora \
-    --output_dir ./evaluation_results
+    --output_dir ./evaluation_results \
+    --image_size 448
 ```
 
 ### Evaluate with Shuffled Samples
@@ -607,6 +641,7 @@ python evaluate.py \
     --test_csv ./manifests/manifest_test.csv \
     --model_path ./checkpoints/weather_lora \
     --output_dir ./evaluation_results \
+    --image_size 448 \
     --shuffle \
     --shuffle_seed 42
 ```
@@ -617,6 +652,7 @@ python evaluate.py \
     --test_csv ./manifests/manifest_test.csv \
     --model_path ./checkpoints/weather_lora \
     --output_dir ./evaluation_results \
+    --image_size 448 \
     --do_sample \
     --temperature 0.7 \
     --top_p 0.9
@@ -627,7 +663,8 @@ python evaluate.py \
 python evaluate.py \
     --test_csv ./manifests/manifest_test.csv \
     --model_name Qwen/Qwen2.5-VL-3B-Instruct \
-    --output_dir ./evaluation_results/base_model
+    --output_dir ./evaluation_results/base_model \
+    --image_size 448
 ```
 
 ### Quick Test (10 samples)
@@ -635,6 +672,7 @@ python evaluate.py \
 python evaluate.py \
     --test_csv ./manifests/manifest_test.csv \
     --model_path ./checkpoints/weather_lora \
+    --image_size 448 \
     --max_samples 10
 ```
 
