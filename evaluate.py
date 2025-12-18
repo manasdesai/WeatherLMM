@@ -139,12 +139,24 @@ class WeatherForecastEvaluator:
             print(f"  Fine-tuned checkpoint: {model_path}")
 
         # Load base model
-        self.model = AutoModelForVision2Seq.from_pretrained(
-            model_name,
-            torch_dtype=torch.bfloat16 if self.device == "cuda" else torch.float32,
-            device_map="auto" if self.device == "cuda" else None,
-            trust_remote_code=True,
-        )
+        # IMPORTANT: Don't use device_map="auto" as it can offload to CPU
+        # Load directly to GPU for full speed
+        if self.device == "cuda":
+            print("Loading model directly to GPU (not using device_map='auto' to avoid CPU offloading)...")
+            self.model = AutoModelForVision2Seq.from_pretrained(
+                model_name,
+                torch_dtype=torch.bfloat16,
+                trust_remote_code=True,
+            )
+            # Explicitly move to GPU
+            self.model = self.model.to(self.device)
+        else:
+            self.model = AutoModelForVision2Seq.from_pretrained(
+                model_name,
+                torch_dtype=torch.float32,
+                trust_remote_code=True,
+            )
+            self.model = self.model.to(self.device)
 
         self.processor = AutoProcessor.from_pretrained(
             model_name,
@@ -154,40 +166,76 @@ class WeatherForecastEvaluator:
         # Load LoRA adapter if provided
         if model_path and PEFT_AVAILABLE:
             print(f"Loading LoRA adapter from {model_path}...")
-            self.model = PeftModel.from_pretrained(self.model, model_path)
+            # IMPORTANT: PeftModel.from_pretrained might use device_map internally
+            # Explicitly disable it and ensure base model stays on GPU
+            self.model = PeftModel.from_pretrained(
+                self.model, 
+                model_path,
+                # Don't let PEFT use device_map which might offload to CPU
+            )
+            # Force entire model (base + LoRA) to GPU
+            if self.device == "cuda":
+                print("  Ensuring base model and LoRA adapter are on GPU...")
+                self.model = self.model.to(self.device)
+                # Double-check: move all parameters explicitly
+                for param in self.model.parameters():
+                    if param.device.type != "cuda":
+                        param.data = param.data.to(self.device)
             print("LoRA adapter loaded")
         elif model_path and not PEFT_AVAILABLE:
             raise ImportError("PEFT required to load LoRA models. Install with: pip install peft")
 
         self.model.eval()
-        
-        # Optimize model for inference if torch.compile is available (PyTorch 2.0+)
-        # Note: torch.compile may not work well with LoRA/PEFT models, so we skip it for now
-        # If you want to try it, uncomment below, but test carefully
-        # try:
-        #     if hasattr(torch, 'compile') and self.device == "cuda":
-        #         print("Optimizing model with torch.compile for faster inference...")
-        #         self.model = torch.compile(self.model, mode="reduce-overhead")
-        #         print("  Model compiled successfully")
-        # except Exception as e:
-        #     print(f"  Could not compile model: {e}")
-        
         # Enable better memory efficiency
         if self.device == "cuda":
             torch.backends.cudnn.benchmark = True  # Optimize for consistent input sizes
             torch.backends.cuda.matmul.allow_tf32 = True  # Use TF32 for faster matmuls on Ampere+
         
-        # Verify model device placement
+        # Verify model device placement and memory usage
         try:
-            model_device = next(self.model.parameters()).device
-            if model_device.type == "cuda":
+            # Check all parameters to see if any are on CPU
+            all_params = list(self.model.parameters())
+            gpu_params = [p for p in all_params if p.device.type == "cuda"]
+            cpu_params = [p for p in all_params if p.device.type == "cpu"]
+            
+            model_device = all_params[0].device if all_params else None
+            
+            if model_device and model_device.type == "cuda":
                 print(f"Model verified on GPU: {model_device}")
                 if torch.cuda.is_available():
                     allocated = torch.cuda.memory_allocated(model_device) / 1024**3
                     reserved = torch.cuda.memory_reserved(model_device) / 1024**3
                     print(f"  GPU memory: {allocated:.2f} GB allocated, {reserved:.2f} GB reserved")
+                    
+                    # Check if any parameters are on CPU
+                    if cpu_params:
+                        print(f"  WARNING: {len(cpu_params)} parameters are on CPU!")
+                        print(f"           Only {len(gpu_params)}/{len(all_params)} parameters on GPU")
+                        print(f"           This will cause very slow generation due to CPU-GPU transfers")
+                        print(f"           Attempting to move remaining parameters to GPU...")
+                        # Try to move remaining parameters
+                        for param in cpu_params:
+                            try:
+                                param.data = param.data.to(self.device)
+                            except:
+                                pass
+                        # Re-check
+                        allocated_after = torch.cuda.memory_allocated(model_device) / 1024**3
+                        print(f"           After fix: {allocated_after:.2f} GB allocated")
+                    
+                    # Check if model is fully on GPU (should be 6-10 GB for 3B model)
+                    if allocated < 3.0:
+                        print(f"  WARNING: GPU memory usage is very low ({allocated:.2f} GB)")
+                        print(f"           Expected: 6-10 GB for 3B model in bfloat16")
+                        print(f"           Only LoRA weights may be on GPU, base model likely on CPU!")
+                        print(f"           This will cause very slow generation (100+ seconds per sample)")
+                    elif allocated >= 3.0 and allocated < 6.0:
+                        print(f"  NOTE: GPU memory ({allocated:.2f} GB) is lower than expected")
+                        print(f"        Model may be partially quantized or some layers on CPU")
+                    else:
+                        print(f"  ✓ Model appears to be fully on GPU ({allocated:.2f} GB)")
             else:
-                print(f"WARNING: Model is on {model_device}, not GPU! This will be slow.")
+                print(f"WARNING: Model is on {model_device}, not GPU! This will be very slow.")
         except Exception as e:
             print(f"WARNING: Could not verify model device: {e}")
             print(f"   Assuming model is on {self.device}")
