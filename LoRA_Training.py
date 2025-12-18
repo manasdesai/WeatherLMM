@@ -435,7 +435,7 @@ def main():
     
     print("Dataset validation passed.")
     
-    # Check available GPUs
+    # Check available GPUs (for logging only)
     if torch.cuda.is_available():
         num_gpus = torch.cuda.device_count()
         print(f"Available GPUs: {num_gpus}")
@@ -445,45 +445,20 @@ def main():
     else:
         num_gpus = 0
         print("No CUDA GPUs available")
-    
-    # Determine device_map strategy
-    if num_gpus > 1:
-        if args.device_map == "auto":
-            # Auto-distribute model across available GPUs
-            device_map_strategy = "auto"
-            print(f"\nUsing model parallelism: Auto-distributing model across {num_gpus} GPUs")
-        elif args.device_map == "balanced":
-            device_map_strategy = "balanced"
-            print(f"\nUsing model parallelism: Balanced distribution across {num_gpus} GPUs")
-        else:
-            device_map_strategy = args.device_map
-            print(f"\nUsing custom device_map: {device_map_strategy}")
-    else:
-        device_map_strategy = None if num_gpus == 0 else "auto"
-        if num_gpus == 1:
-            print(f"\nSingle GPU detected. Using device_map='auto' for optimal memory usage.")
-    
-    # When using device_map (model parallelism), prevent Accelerate from initializing distributed training
-    # Device_map splits model across GPUs, which is incompatible with DDP (data parallelism)
-    if device_map_strategy is not None and device_map_strategy != "cpu":
-        # Set environment variables to prevent distributed initialization
-        # os is already imported at the top of the file
-        os.environ["ACCELERATE_USE_CPU"] = "false"
-        os.environ["MASTER_ADDR"] = "localhost"
-        os.environ["MASTER_PORT"] = "29500"
-        # Most importantly: tell Accelerate this is NOT a distributed run
-        os.environ["LOCAL_RANK"] = "-1"
-        os.environ["RANK"] = "-1"
-        os.environ["WORLD_SIZE"] = "1"
-    
+
+    # Use the provided device_map directly.
+    # The default is "auto", which will place the model on a single GPU
+    # or shard it across multiple GPUs if they are visible.
+    device_map_strategy = args.device_map if torch.cuda.is_available() else None
+
     # Load model with error handling
     print(f"Loading model: {args.model_name}")
     try:
         model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-                args.model_name,
-                torch_dtype=(torch.float16 if args.fp16 else None),
-                device_map=device_map_strategy,
-            )
+            args.model_name,
+            torch_dtype=(torch.float16 if args.fp16 else None),
+            device_map=device_map_strategy,
+        )
         
         # Clear cache after model loading
         if torch.cuda.is_available():
@@ -545,26 +520,6 @@ def main():
         print(f"Auto-adjusting save_steps to {adjusted_save_steps} to satisfy load_best_model_at_end requirement.")
         save_steps = adjusted_save_steps
     
-    # Determine if we should use distributed training
-    # When using device_map (model parallelism), we should NOT use DDP (data parallelism)
-    # They are incompatible - device_map splits model across GPUs, DDP replicates model on each GPU
-    use_ddp = False
-    if num_gpus > 1 and device_map_strategy is None:
-        # Only use DDP if we have multiple GPUs AND we're NOT using device_map
-        use_ddp = True
-        print(f"\nUsing DistributedDataParallel (DDP) for data parallelism across {num_gpus} GPUs")
-    elif num_gpus > 1 and device_map_strategy is not None:
-        print(f"\nUsing model parallelism (device_map={device_map_strategy}). DDP disabled (incompatible with model parallelism).")
-        print("Model will be split across GPUs, but training runs in single-process mode.")
-    
-    # When using device_map, prevent Accelerate from initializing distributed training
-    if device_map_strategy is not None and device_map_strategy != "cpu":
-        # Set environment variables to prevent distributed initialization
-        # os is already imported at the top of the file
-        os.environ["LOCAL_RANK"] = "-1"
-        os.environ["RANK"] = "-1"
-        os.environ["WORLD_SIZE"] = "1"
-    
     training_args = TrainingArguments(
         output_dir=args.output_dir,
         per_device_train_batch_size=args.per_device_train_batch_size,
@@ -611,65 +566,14 @@ def main():
         print(f"\n{'='*60}")
         print(f"GPU Memory Analysis")
         print(f"{'='*60}")
-        print(f"Total GPU Memory: {total:.2f} GB")
+        print(f"Total GPU Memory (GPU 0): {total:.2f} GB")
         print(f"Currently Reserved: {reserved:.2f} GB ({reserved/total*100:.1f}%)")
         print(f"Currently Allocated: {allocated:.2f} GB")
         print(f"Free Memory: {free:.2f} GB")
-        print(f"\nWhy memory usage is so high:")
-        print(f"  1. Base Model (Qwen2.5-VL-7B FP16): ~17-20 GB")
-        print(f"     - Model weights stored in FP16")
-        print(f"  2. 12 Images per Sample (CRITICAL MEMORY KILLER):")
-        print(f"     - Vision encoder processes ALL 12 images simultaneously")
-        print(f"     - Each image: ~1024x1024 pixels → large activation tensors")
-        print(f"     - Vision encoder activations: ~5-10 GB per batch")
-        print(f"     - Image pixel_values tensors: ~2-4 GB")
-        print(f"  3. Optimizer States (AdamW):")
-        print(f"     - Momentum: ~17-20 GB (if full model)")
-        print(f"     - Variance: ~17-20 GB (if full model)")
-        print(f"     - With LoRA: Only trainable params (~0.1-0.5 GB)")
-        print(f"  4. Gradients: ~17-20 GB during backward pass")
-        print(f"  5. Intermediate Activations: ~5-10 GB (stored for backprop)")
-        print(f"\nEstimated Breakdown:")
-        print(f"  Model weights: ~20 GB")
-        print(f"  Vision processing (12 images): ~10-15 GB")
-        print(f"  Activations + Gradients: ~25-30 GB")
-        print(f"  Total: ~55-65 GB (exceeds 40GB GPU!)")
-        print(f"\nKey Issue: Processing 12 images through vision encoder simultaneously")
-        print(f"         is extremely memory-intensive, even with batch_size=1")
-        
-        # Multi-GPU information
-        if num_gpus > 1:
-            estimated_per_gpu = (total * num_gpus) / num_gpus  # Simplified, but shows distribution
-            print(f"\n{'='*60}")
-            print(f"Multi-GPU Training Available ({num_gpus} GPUs)")
-            print(f"{'='*60}")
-            print(f"Model Parallelism: Model layers split across {num_gpus} GPUs")
-            print(f"Data Parallelism: Trainer uses DistributedDataParallel")
-            print(f"Total GPU Memory: ~{total * num_gpus:.1f} GB across {num_gpus} GPUs")
-            print(f"Expected per-GPU usage: ~{total / num_gpus:.1f} GB per GPU (model split)")
-            print(f"Memory Benefit: Model weights distributed, reducing per-GPU load")
-            print(f"{'='*60}\n")
-        else:
-            print(f"\n💡 TIP: Use multiple GPUs to distribute memory:")
-            print(f"   - Request multiple GPUs in your PBS script: ngpus=2 or ngpus=4")
-            print(f"   - The model will automatically split across GPUs")
-            print(f"   - Trainer will use data parallelism for faster training")
-            print(f"{'='*60}\n")
         
         # Warn if memory is very low
         if free < 2.0:  # Less than 2GB free
-            print(f"⚠️  CRITICAL: Very low GPU memory ({free:.2f} GB free).")
-            print("\nImmediate actions needed:")
-            print("  1. Use MULTIPLE GPUs (recommended):")
-            print("     - Request 2-4 GPUs in PBS: ngpus=2 or ngpus=4")
-            print("     - Model will auto-distribute across GPUs")
-            print("  2. Set: export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True")
-            print("  3. Use 8-bit optimizer (install bitsandbytes):")
-            print("     pip install bitsandbytes")
-            print("     Then add: --use_8bit_optimizer")
-            print("  4. Consider using 3B model instead: --model_name Qwen/Qwen2.5-VL-3B-Instruct")
-            print("  5. Increase gradient_accumulation_steps to 8 or 16")
-            print("  6. Ensure batch_size=1 and dataloader_num_workers=0")
+            print(f"WARNING: Very low GPU memory ({free:.2f} GB free).")
         
         # Clear cache before training
         torch.cuda.empty_cache()
