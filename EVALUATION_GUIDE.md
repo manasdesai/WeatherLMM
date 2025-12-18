@@ -8,9 +8,10 @@ Complete guide for evaluating fine-tuned WeatherLMM models on test sets.
 
 The evaluation script (`evaluate.py`) provides comprehensive evaluation of your fine-tuned models by:
 1. **Loading models** (base or LoRA fine-tuned)
-2. **Running inference** on test set
-3. **Computing metrics** (BLEU, ROUGE, METEOR)
-4. **Generating reports** with detailed comparisons
+2. **Validating test data** (automatically filters out samples with missing images)
+3. **Running inference** on test set (with optional shuffling)
+4. **Computing metrics** (BLEU, ROUGE, METEOR)
+5. **Generating reports** with detailed comparisons
 
 ---
 
@@ -89,7 +90,9 @@ python evaluate.py \
     --device cuda \                         # Device (cuda or cpu)
     --do_sample \                           # Enable sampling (optional, default: greedy)
     --temperature 0.7 \                     # Sampling temperature (only with --do_sample)
-    --top_p 0.9                            # Nucleus sampling (only with --do_sample)
+    --top_p 0.9 \                           # Nucleus sampling (only with --do_sample)
+    --shuffle \                             # Shuffle evaluation samples (optional)
+    --shuffle_seed 42                       # Random seed for shuffling (default: 42)
 ```
 
 ### Arguments
@@ -107,6 +110,8 @@ python evaluate.py \
 | `--do_sample` | No | `False` | Enable sampling instead of greedy decoding |
 | `--temperature` | No | `0.7` | Sampling temperature (only used with `--do_sample`) |
 | `--top_p` | No | `0.9` | Nucleus sampling parameter (only used with `--do_sample`) |
+| `--shuffle` | No | `False` | Shuffle evaluation samples before processing |
+| `--shuffle_seed` | No | `42` | Random seed for shuffling (for reproducibility) |
 
 *Either `--model_name` (for base model) or `--model_path` (for fine-tuned) must be provided.
 
@@ -255,6 +260,8 @@ python create_full_image_manifest.py \
 
 This creates `./manifests/manifest_test.csv`.
 
+**Note**: The evaluation script automatically filters out samples with missing images during manifest loading. You'll see a message like: `"Filtered out X samples with missing images or invalid data (from Y total). Remaining: Z valid samples."`
+
 ### Step 2: Evaluate Base Model (Baseline)
 
 ```bash
@@ -395,6 +402,19 @@ This helps diagnose whether identical outputs are due to:
 - **Deterministic decoding** (fixed by using `--do_sample`)
 - **Model behavior** (model always generates same template regardless of input)
 
+### 7. Shuffle Evaluation Order
+For randomized evaluation order (useful for testing or when evaluating subsets):
+
+```bash
+python evaluate.py \
+    --test_csv ./manifests/manifest_test.csv \
+    --model_path ./checkpoints/weather_lora \
+    --shuffle \
+    --shuffle_seed 42  # Use same seed for reproducibility
+```
+
+This shuffles the evaluation samples after filtering invalid ones, ensuring you get a random subset when using `--max_samples`.
+
 ---
 
 ## Troubleshooting
@@ -419,9 +439,12 @@ pip install peft
 
 ### Image Not Found Errors
 
-- Verify image paths in test manifest CSV are correct
+- **Automatic handling**: The evaluation script automatically filters out samples with missing images during manifest loading
+- If you see many filtered samples, verify image paths in test manifest CSV are correct
 - Check that images exist at specified paths
 - Ensure `--image_base_dir` matches your actual directory structure
+- The script will print: `"Filtered out X samples with missing images or invalid data..."`
+- Only valid samples (with all 12 images present) are evaluated
 
 ### Out of Memory
 
@@ -576,6 +599,16 @@ python evaluate.py \
     --test_csv ./manifests/manifest_test.csv \
     --model_path ./checkpoints/weather_lora \
     --output_dir ./evaluation_results
+```
+
+### Evaluate with Shuffled Samples
+```bash
+python evaluate.py \
+    --test_csv ./manifests/manifest_test.csv \
+    --model_path ./checkpoints/weather_lora \
+    --output_dir ./evaluation_results \
+    --shuffle \
+    --shuffle_seed 42
 ```
 
 ### Evaluate with Sampling

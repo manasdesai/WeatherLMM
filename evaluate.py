@@ -38,6 +38,7 @@ os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 import argparse
 import json
 import csv
+import random
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from tqdm import tqdm
@@ -214,25 +215,54 @@ class WeatherForecastEvaluator:
         return output_text.strip()
 
 
-def load_test_manifest(csv_path: str) -> List[Dict[str, Any]]:
+def load_test_manifest(csv_path: str, shuffle: bool = False, seed: int = 42) -> List[Dict[str, Any]]:
     """
-    Load test manifest CSV.
+    Load test manifest CSV and filter out samples with missing images.
 
     Args:
         csv_path: Path to manifest CSV
+        shuffle: If True, shuffle the records after filtering
+        seed: Random seed for shuffling (for reproducibility)
 
     Returns:
-        List of records with image_paths and target_text
+        List of records with image_paths and target_text (only valid samples)
     """
     df = pd.read_csv(csv_path)
     
     records = []
-    for _, row in df.iterrows():
+    filtered_count = 0
+    
+    for idx, row in df.iterrows():
         if "image_paths" in df.columns:
             # Semicolon-separated format
             image_paths_str = row["image_paths"]
-            image_paths = [path.strip() for path in image_paths_str.split(';')]
+            if pd.isna(image_paths_str) or not image_paths_str:
+                filtered_count += 1
+                continue
+            
+            image_paths = [path.strip() for path in str(image_paths_str).split(';') if path.strip()]
+            
+            # Validate we have exactly 12 images
+            if len(image_paths) != 12:
+                filtered_count += 1
+                continue
+            
+            # Check all image paths exist
+            all_exist = True
+            for img_path in image_paths:
+                if pd.isna(img_path) or not img_path or not os.path.exists(str(img_path)):
+                    all_exist = False
+                    break
+            
+            if not all_exist:
+                filtered_count += 1
+                continue
+            
+            # Check target_text is valid
             target_text = row["target_text"]
+            if pd.isna(target_text) or not str(target_text).strip():
+                filtered_count += 1
+                continue
         else:
             raise ValueError("Manifest must contain 'image_paths' and 'target_text' columns")
         
@@ -240,6 +270,16 @@ def load_test_manifest(csv_path: str) -> List[Dict[str, Any]]:
             "image_paths": image_paths,
             "target_text": target_text
         })
+    
+    if filtered_count > 0:
+        print(f"Filtered out {filtered_count} samples with missing images or invalid data (from {len(df)} total).")
+        print(f"Remaining: {len(records)} valid samples.")
+    
+    # Shuffle if requested
+    if shuffle:
+        random.seed(seed)
+        random.shuffle(records)
+        print(f"Shuffled evaluation samples (seed={seed}).")
     
     return records
 
@@ -328,17 +368,22 @@ def evaluate(
     results = []
     
     for i, record in enumerate(tqdm(test_records, desc="Generating forecasts")):
-        # Load images
+        # Load images (should all exist since we filtered during manifest loading)
         image_paths = record["image_paths"]
         images = []
-        for img_path in image_paths:
-            if not os.path.exists(img_path):
-                print(f"Warning: Image not found: {img_path}")
-                continue
-            images.append(Image.open(img_path).convert("RGB"))
+        try:
+            for img_path in image_paths:
+                # Double-check existence (in case files were deleted after loading)
+                if not os.path.exists(img_path):
+                    print(f"Warning: Image file was deleted after manifest loading: {img_path}. Skipping sample {i}.")
+                    break
+                images.append(Image.open(img_path).convert("RGB"))
+        except Exception as e:
+            print(f"Error loading images for sample {i}: {e}. Skipping.")
+            continue
         
         if len(images) != 12:
-            print(f"Warning: Expected 12 images, got {len(images)}. Skipping.")
+            print(f"Warning: Expected 12 images, got {len(images)} for sample {i}. Skipping.")
             continue
         
         # Generate prediction
@@ -521,13 +566,28 @@ def main():
         default=0.9,
         help="Nucleus sampling parameter (only used if --do_sample is set). Default: 0.9"
     )
+    parser.add_argument(
+        "--shuffle",
+        action="store_true",
+        help="Shuffle evaluation samples before processing (for randomized evaluation order)"
+    )
+    parser.add_argument(
+        "--shuffle_seed",
+        type=int,
+        default=42,
+        help="Random seed for shuffling (for reproducibility). Default: 42"
+    )
     
     args = parser.parse_args()
     
-    # Load test manifest
+    # Load test manifest (filters out samples with missing images)
     print(f"Loading test manifest from: {args.test_csv}")
-    test_records = load_test_manifest(args.test_csv)
-    print(f"Loaded {len(test_records)} test samples")
+    test_records = load_test_manifest(
+        args.test_csv,
+        shuffle=args.shuffle,
+        seed=args.shuffle_seed
+    )
+    print(f"Loaded {len(test_records)} valid test samples")
     
     # Initialize evaluator
     evaluator = WeatherForecastEvaluator(

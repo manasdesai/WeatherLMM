@@ -193,6 +193,7 @@ python LoRA_Training.py \
 - **Evaluation**: Optional validation set evaluation
 - **Logging**: TensorBoard-compatible logs
 - **Gradient accumulation**: Simulate larger batch sizes
+- **Automatic data validation**: Filters out samples with missing images during dataset initialization (prevents FileNotFoundError during training)
 
 ### Output
 
@@ -268,9 +269,11 @@ tensorboard --logdir ./checkpoints/weather_lora/logs
 - Monitor evaluation loss if using `--eval_csv`
 
 ### 5. Data Quality
-- Verify image paths exist before training
+- **Automatic filtering**: The training script automatically filters out samples with missing images during dataset initialization
+- You'll see a message like: `"Filtered out X samples with missing images (from Y total). Remaining: Z valid samples."`
 - Check that `target_text` contains high-quality forecast text
 - Ensure images and text are properly aligned (same date/time)
+- The script validates all image paths exist before training starts, preventing FileNotFoundError during training
 
 ### 6. Checkpointing
 - Checkpoints saved every `--save_steps` steps
@@ -318,9 +321,12 @@ pip install --upgrade transformers peft accelerate pandas
 ```
 
 ### Image Not Found Errors
-- Verify image paths in manifest CSV are correct
+- **Automatic handling**: The training script automatically filters out samples with missing images during dataset initialization
+- If you see many filtered samples, verify image paths in manifest CSV are correct
 - Check `--image_base_dir` matches your actual image directory
 - Ensure images follow naming pattern: `{variable}_{init_time}_{lead_time}_{date}.1.png`
+- The script will print how many samples were filtered: `"Filtered out X samples with missing images..."`
+- Only valid samples (with all 12 images present) are used for training
 
 ### Manifest Format Issues
 The script supports two manifest formats:
