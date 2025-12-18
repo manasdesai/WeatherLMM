@@ -70,6 +70,7 @@ class ImageTextDataset(Dataset):
         row = self.df.iloc[idx]
 
         our_weather_images = []
+        image_paths_list = []
 
         def _load_image(path: str) -> Image.Image:
             """Load an image and optionally resize to a fixed square size.
@@ -97,6 +98,7 @@ class ImageTextDataset(Dataset):
                     raise FileNotFoundError(f"Image not found or path is empty: {image_path}")
                 try:
                     our_weather_images.append(_load_image(image_path))
+                    image_paths_list.append(image_path)
                 except Exception as e:
                     raise RuntimeError(f"Failed to load image {image_path}: {e}")
             
@@ -111,64 +113,130 @@ class ImageTextDataset(Dataset):
                     raise FileNotFoundError(f"Image not found or path is empty: {image_path} (column: {col})")
                 try:
                     our_weather_images.append(_load_image(image_path))
+                    image_paths_list.append(image_path)
                 except Exception as e:
                     raise RuntimeError(f"Failed to load image {image_path} (column: {col}): {e}")
             text = row["text"]
             if pd.isna(text):
                 raise ValueError(f"Text is NaN in row {idx}")
 
-        return {"image": our_weather_images, "text": text}
+        return {"image": our_weather_images, "image_paths": image_paths_list, "text": text}
+
+# Mapping of variable names to human-readable descriptions
+VARIABLE_DESCRIPTIONS = {
+    "t_z_1000": "Temperature and geopotential height at 1000 hPa",
+    "t_z_850": "Temperature and geopotential height at 850 hPa",
+    "t_z_700": "Temperature and geopotential height at 700 hPa",
+    "t_z_500": "Temperature and geopotential height at 500 hPa",
+    "t_z_200": "Temperature and geopotential height at 200 hPa",
+    "t2m_wind10m": "2-meter temperature and 10-meter wind",
+    "thickness_mslp": "500-1000 hPa thickness and mean sea level pressure",
+    "uv_rh_1000": "Wind and relative humidity at 1000 hPa",
+    "uv_rh_850": "Wind and relative humidity at 850 hPa",
+    "uv_rh_700": "Wind and relative humidity at 700 hPa",
+    "uv_rh_500": "Wind and relative humidity at 500 hPa",
+    "uv_rh_200": "Wind and relative humidity at 200 hPa",
+}
+
+def extract_variable_name(image_path: str) -> str:
+    """
+    Extract variable name from image filename.
     
+    Examples:
+        t_z_1000_0000_12_20200101.1.png -> t_z_1000
+        uv_rh_500_1200_12_20200101.1.png -> uv_rh_500
+        t2m_wind10m_0000_12_20200101.1.png -> t2m_wind10m
+    """
+    filename = os.path.basename(image_path)
+    # Remove extension and split by underscore
+    # Pattern: {variable}_{init_time}_{lead_time}_{date}.1.png
+    parts = filename.replace('.1.png', '').replace('.png', '').split('_')
+    
+    # Variable name is everything before the init_time (which is 4 digits)
+    # Find where the 4-digit time starts
+    variable_parts = []
+    for part in parts:
+        if len(part) == 4 and part.isdigit():
+            # Found the init_time, stop here
+            break
+        variable_parts.append(part)
+    
+    variable_name = '_'.join(variable_parts)
+    return variable_name
+
 # Defining our datacollector along with masking.
 @dataclass
 class WeatherDataCollectorImageText:
     
     processor: AutoProcessor
     
+    def _build_content_with_descriptions(self, images: List[Image.Image], image_paths: List[str]) -> List[Dict[str, Any]]:
+        """Build content array with interleaved image descriptions and images."""
+        content = []
+        
+        # Add introductory text
+        content.append({
+            "type": "text",
+            "text": (
+                "You are a skilled weather forecasting system operating on behalf of the National "
+                "Weather Service's Weather Prediction Center. Given a set of numerical weather "
+                "prediction model output images for a +12 hour forecast, produce a short-range "
+                "synoptic-scale weather forecast for the continental United States over the next 1 "
+                "to 2 days. Your forecast will be relied upon by millions across the country, so it "
+                "is critical to be careful and accurate. Think deeply about each weather variable "
+                "and their relationships, recalling principles of quasi-geostrophic meteorology, "
+                "to ensure your forecast is physically consistent before generating your final answer.\n\n"
+                "The following 12 forecast maps are provided:\n"
+            ),
+        })
+        
+        # Add each image with its description
+        for i, (img, img_path) in enumerate(zip(images, image_paths), 1):
+            # Extract variable name from path
+            variable_name = extract_variable_name(img_path)
+            description = VARIABLE_DESCRIPTIONS.get(
+                variable_name, 
+                f"Forecast map {i}: {variable_name}"
+            )
+            
+            # Add description text
+            content.append({
+                "type": "text",
+                "text": f"Map {i}: {description}",
+            })
+            
+            # Add the image
+            content.append({
+                "type": "image",
+                "image": img,
+            })
+        
+        # Add final instruction
+        content.append({
+            "type": "text",
+            "text": "\nBased on these 12 forecast maps, provide a detailed weather forecast for the continental United States.",
+        })
+        
+        return content
+    
     def __call__(self, batch: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
         weather_images_batch = [item["image"] for item in batch]
+        image_paths_batch = [item.get("image_paths", []) for item in batch]
         text = [item["text"] for item in batch]
         
         full_text = []
         user_only_messages = []
 
-        for t in text:
+        for idx, (images, image_paths, t) in enumerate(zip(weather_images_batch, image_paths_batch, text)):
+            # Build content with interleaved descriptions
+            content = self._build_content_with_descriptions(images, image_paths)
+            
             user_message = {
                 "role": "user",
-                "content": [
-                    # Adding our 12 images as context for the model.
-                    {"type": "image"},
-                    {"type": "image"},
-                    {"type": "image"},
-                    {"type": "image"},
-                    {"type": "image"},
-                    {"type": "image"},
-                    {"type": "image"},
-                    {"type": "image"},
-                    {"type": "image"},
-                    {"type": "image"},
-                    {"type": "image"},
-                    {"type": "image"},
-                    {
-                        "type": "text",
-                        "text": (
-                            "You are a skilled weather forecasting system operating on behalf of the National"
-                            "Weather Service’s Weather Prediction Center. Given a set of numerical weather"
-                            "prediction model output images for a +12 hour forecast, produce a short-range"
-                            "synoptic-scale weather forecast for the continental United States over the next 1"
-                            "to 2 days. Your forecast will be relied upon by millions across the country, so it"
-                            "is critical to be careful and accurate. Think deeply about each weather variable"
-                            "and their relationships, recalling principles of quasi-geostrophic meteorology,"
-                            "to ensure your forecast is physically consistent before generating your final"
-                            "answer."
-                            "Provided are 12 forecast maps. Temperature and geopotential at 1000hPa, 850hPa,"
-                            "700hPa, 500hPa, and 200hPa; wind and relative humidity at 1000hPa, 850hPa, 700hPa,"
-                            "500hPa, and 200hPa; 2m temperature and 10m wind; 1000hpa-500hPa thickness and mean"
-                            "sea level pressure. Begin forecast."
-                        ),
-                    },
-                ],
+                "content": content,
             }
+
+            
 
             full_messages = [
                 user_message,
