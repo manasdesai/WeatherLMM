@@ -33,10 +33,12 @@ class ImageTextDataset(Dataset):
         self.image_size = image_size
         
         # Limit dataset size if specified (for quick development)
+        # Shuffle BEFORE taking samples to ensure temporal diversity
         if max_samples is not None and max_samples > 0:
             original_size = len(self.df)
-            self.df = self.df.head(max_samples)
-            print(f"Limited dataset to {len(self.df)} samples (from {original_size} total)")
+            # Shuffle to get diverse samples across time periods
+            self.df = self.df.sample(n=min(max_samples, original_size), random_state=42).reset_index(drop=True)
+            print(f"Limited dataset to {len(self.df)} samples (from {original_size} total, shuffled for temporal diversity)")
         
         # Support both formats:
         # 1. Semicolon-separated image_paths column (from create_full_image_manifest.py)
