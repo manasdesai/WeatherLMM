@@ -270,7 +270,7 @@ class WeatherDataCollectorImageText:
             # Add description text
             content.append({
                 "type": "text",
-                "text": f"Map {i}: {description}",
+                "text": f"Map {i}: {description} ({img_path})",
             })
             
             # Add the image
@@ -282,7 +282,7 @@ class WeatherDataCollectorImageText:
         # Add final instruction
         content.append({
             "type": "text",
-            "text": "\nBased on these 12 forecast maps, provide a detailed weather forecast for the continental United States.",
+            "text": "\nForecast begins below.\n\nValid",
         })
         
         return content
@@ -589,23 +589,35 @@ def main():
         num_gpus = 0
         print("No CUDA GPUs available")
 
-    # Use the provided device_map directly.
-    # The default is "auto", which will place the model on a single GPU
-    # or shard it across multiple GPUs if they are visible.
-    device_map_strategy = args.device_map if torch.cuda.is_available() else None
-
-    # Load model with error handling
+    # Load model directly to GPU (don't use device_map="auto" which can offload to CPU)
+    # This is critical for training speed - device_map="auto" can offload model to CPU
     print(f"Loading model: {args.model_name}")
+    print("Loading model directly to GPU (not using device_map='auto' to avoid CPU offloading)...")
     try:
+        # Determine dtype: prefer bfloat16 for training (better than float16)
+        if args.bf16:
+            model_dtype = torch.bfloat16
+        elif args.fp16:
+            model_dtype = torch.float16
+        else:
+            # Default to bfloat16 if available, otherwise float32
+            model_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float32
+        
         model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
             args.model_name,
-            torch_dtype=(torch.float16 if args.fp16 else None),
-            device_map=device_map_strategy,
+            torch_dtype=model_dtype,
+            # Don't use device_map - load directly to GPU for full speed
         )
         
-        # Clear cache after model loading
+        # Explicitly move to GPU
         if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+            model = model.to("cuda:0")
+            # Enable CUDA optimizations for faster training
+            torch.backends.cudnn.benchmark = True
+            torch.backends.cuda.matmul.allow_tf32 = True
+        
+        # Clear cache after model loading
+        torch.cuda.empty_cache()
     except Exception as e:
         raise RuntimeError(f"Failed to load model {args.model_name}: {e}")
     
@@ -654,9 +666,31 @@ def main():
                 "update `peft`/`transformers` to a compatible version."
             )
         
-        # Clear cache after LoRA
+        # Verify model is fully on GPU after LoRA
         if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+            all_params = list(model.parameters())
+            gpu_params = [p for p in all_params if p.device.type == "cuda"]
+            cpu_params = [p for p in all_params if p.device.type == "cpu"]
+            
+            allocated = torch.cuda.memory_allocated() / 1024**3
+            print(f"\nGPU Memory after LoRA: {allocated:.2f} GB allocated")
+            print(f"Parameters on GPU: {len(gpu_params)}/{len(all_params)}")
+            
+            if cpu_params:
+                print(f"WARNING: {len(cpu_params)} parameters are on CPU!")
+                print(f"Moving remaining parameters to GPU...")
+                model = model.to("cuda:0")
+                # Double-check: move all parameters explicitly
+                for param in model.parameters():
+                    if param.device.type != "cuda":
+                        param.data = param.data.to("cuda:0")
+                allocated_after = torch.cuda.memory_allocated() / 1024**3
+                print(f"After fix: {allocated_after:.2f} GB allocated")
+            else:
+                print(f"✓ All parameters are on GPU")
+        
+        # Clear cache after LoRA
+        torch.cuda.empty_cache()
     except Exception as e:
         raise RuntimeError(f"Failed to apply LoRA configuration: {e}. Check that target_modules exist in the model.")
     
@@ -697,7 +731,7 @@ def main():
         eval_strategy=eval_strategy,
         logging_dir=args.logging_dir if args.logging_dir is not None else os.path.join(args.output_dir, "logs"),
         save_strategy=save_strategy,
-        dataloader_num_workers=0,  # Reduced from 4 to 0 to save memory (prevents parallel data loading)
+        dataloader_num_workers=4,  # Use 4 workers for parallel data loading (faster than 0)
         logging_steps=args.logging_steps,
         eval_steps=eval_steps if eval_strategy == "steps" else None,
         save_steps=save_steps,
@@ -707,7 +741,7 @@ def main():
         metric_for_best_model="eval_loss" if load_best_model else None,
         remove_unused_columns=False,
         gradient_checkpointing=args.gradient_checkpointing,
-        dataloader_pin_memory=False,  # Disable pin_memory to save memory
+        dataloader_pin_memory=True,  # Enable pin_memory for faster CPU→GPU transfers
         optim="adamw_8bit" if args.use_8bit_optimizer else "adamw_torch",  # Use 8-bit optimizer if available
     )
     
