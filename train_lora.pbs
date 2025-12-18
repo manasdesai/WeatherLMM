@@ -61,6 +61,7 @@ python -u LoRA_Training.py \
     --warmup_ratio 0.03 \
     --weight_decay 0.01 \
     --gradient_accumulation_steps 4 \
+    --gradient_checkpointing \
     --fp16 \
     --logging_steps 10 \
     --save_steps 400 \
