@@ -100,8 +100,27 @@ class WeatherForecastEvaluator:
             device: Device to run inference on
             max_new_tokens: Maximum tokens to generate
         """
-        self.device = device if torch.cuda.is_available() else "cpu"
+        # Check CUDA availability and set device
+        cuda_available = torch.cuda.is_available()
+        if device == "cuda" and not cuda_available:
+            print(f"WARNING: CUDA requested but not available. Falling back to CPU.")
+            print(f"   This will be significantly slower. Install CUDA-enabled PyTorch for GPU acceleration.")
+            self.device = "cpu"
+        else:
+            self.device = device if cuda_available else "cpu"
+        
         self.max_new_tokens = max_new_tokens
+
+        # Print GPU information
+        if cuda_available:
+            num_gpus = torch.cuda.device_count()
+            current_device = torch.cuda.current_device()
+            gpu_name = torch.cuda.get_device_name(current_device)
+            gpu_memory = torch.cuda.get_device_properties(current_device).total_memory / 1024**3
+            print(f"CUDA available: {num_gpus} GPU(s) detected")
+            print(f"  Using GPU {current_device}: {gpu_name} ({gpu_memory:.2f} GB)")
+        else:
+            print(f"Running on CPU (no GPU detected)")
 
         print(f"Loading model: {model_name}")
         if model_path:
@@ -124,12 +143,26 @@ class WeatherForecastEvaluator:
         if model_path and PEFT_AVAILABLE:
             print(f"Loading LoRA adapter from {model_path}...")
             self.model = PeftModel.from_pretrained(self.model, model_path)
-            print("✓ LoRA adapter loaded")
+            print("LoRA adapter loaded")
         elif model_path and not PEFT_AVAILABLE:
             raise ImportError("PEFT required to load LoRA models. Install with: pip install peft")
 
         self.model.eval()
-        print(f"Model loaded on {self.device}")
+        
+        # Verify model device placement
+        try:
+            model_device = next(self.model.parameters()).device
+            if model_device.type == "cuda":
+                print(f"Model verified on GPU: {model_device}")
+                if torch.cuda.is_available():
+                    allocated = torch.cuda.memory_allocated(model_device) / 1024**3
+                    reserved = torch.cuda.memory_reserved(model_device) / 1024**3
+                    print(f"  GPU memory: {allocated:.2f} GB allocated, {reserved:.2f} GB reserved")
+            else:
+                print(f"WARNING: Model is on {model_device}, not GPU! This will be slow.")
+        except Exception as e:
+            print(f"WARNING: Could not verify model device: {e}")
+            print(f"   Assuming model is on {self.device}")
 
     def generate_forecast(
         self, 
@@ -184,8 +217,16 @@ class WeatherForecastEvaluator:
             return_tensors="pt",
         )
 
-        if self.device == "cuda":
-            inputs = inputs.to(self.device)
+        # Move inputs to the same device as the model
+        try:
+            model_device = next(self.model.parameters()).device
+            inputs = {k: v.to(model_device) if isinstance(v, torch.Tensor) else v 
+                      for k, v in inputs.items()}
+        except Exception:
+            # Fallback to self.device if we can't determine model device
+            if self.device == "cuda":
+                inputs = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v 
+                          for k, v in inputs.items()}
 
         # Generate forecast
         with torch.no_grad():
