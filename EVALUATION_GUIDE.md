@@ -40,13 +40,26 @@ nltk.download('wordnet')
 
 ## Quick Start
 
-### Evaluate Fine-Tuned LoRA Model
+### Evaluate Fine-Tuned LoRA Model (Greedy Decoding)
 
 ```bash
 python evaluate.py \
     --test_csv ./manifests/manifest_test.csv \
     --model_path ./checkpoints/weather_lora \
     --output_dir ./evaluation_results \
+    --max_samples 100
+```
+
+### Evaluate with Sampling (More Diverse Outputs)
+
+```bash
+python evaluate.py \
+    --test_csv ./manifests/manifest_test.csv \
+    --model_path ./checkpoints/weather_lora \
+    --output_dir ./evaluation_results \
+    --do_sample \
+    --temperature 0.7 \
+    --top_p 0.9 \
     --max_samples 100
 ```
 
@@ -73,7 +86,10 @@ python evaluate.py \
     --batch_size 1 \                        # Batch size (currently only 1)
     --max_samples 100 \                    # Limit samples for quick testing
     --max_new_tokens 2048 \                 # Max tokens to generate
-    --device cuda                           # Device (cuda or cpu)
+    --device cuda \                         # Device (cuda or cpu)
+    --do_sample \                           # Enable sampling (optional, default: greedy)
+    --temperature 0.7 \                     # Sampling temperature (only with --do_sample)
+    --top_p 0.9                            # Nucleus sampling (only with --do_sample)
 ```
 
 ### Arguments
@@ -88,8 +104,79 @@ python evaluate.py \
 | `--max_samples` | No | `None` | Limit number of samples |
 | `--max_new_tokens` | No | `2048` | Max generation length |
 | `--device` | No | `cuda` | Device to use |
+| `--do_sample` | No | `False` | Enable sampling instead of greedy decoding |
+| `--temperature` | No | `0.7` | Sampling temperature (only used with `--do_sample`) |
+| `--top_p` | No | `0.9` | Nucleus sampling parameter (only used with `--do_sample`) |
 
 *Either `--model_name` (for base model) or `--model_path` (for fine-tuned) must be provided.
+
+---
+
+## Decoding Strategies
+
+The evaluation script supports two decoding strategies:
+
+### Greedy Decoding (Default)
+
+**Deterministic**: Always selects the most likely token at each step.
+
+- **Use when**: You want reproducible, consistent results
+- **Best for**: Comparing models fairly, debugging, production use
+- **Behavior**: Same input → same output every time
+
+```bash
+python evaluate.py \
+    --test_csv ./manifests/manifest_test.csv \
+    --model_path ./checkpoints/weather_lora \
+    --output_dir ./evaluation_results
+    # No --do_sample flag = greedy decoding
+```
+
+### Sampling
+
+**Stochastic**: Samples from the probability distribution over tokens.
+
+- **Use when**: You want diverse outputs, testing model creativity
+- **Best for**: Exploring model behavior, generating multiple variants
+- **Behavior**: Same input → different outputs each run
+
+**Parameters:**
+- `--temperature`: Controls randomness (0.1-2.0)
+  - Lower (0.1-0.5): More conservative, focused outputs
+  - Medium (0.7-1.0): Balanced creativity and coherence
+  - Higher (1.2-2.0): More diverse, potentially less coherent
+- `--top_p`: Nucleus sampling threshold (0.0-1.0)
+  - Filters tokens to top-p probability mass
+  - Lower (0.5-0.8): More focused
+  - Higher (0.9-0.95): More diverse
+
+```bash
+# Balanced sampling (recommended)
+python evaluate.py \
+    --test_csv ./manifests/manifest_test.csv \
+    --model_path ./checkpoints/weather_lora \
+    --do_sample \
+    --temperature 0.7 \
+    --top_p 0.9
+
+# More conservative sampling
+python evaluate.py \
+    --test_csv ./manifests/manifest_test.csv \
+    --model_path ./checkpoints/weather_lora \
+    --do_sample \
+    --temperature 0.5 \
+    --top_p 0.8
+
+# More creative sampling
+python evaluate.py \
+    --test_csv ./manifests/manifest_test.csv \
+    --model_path ./checkpoints/weather_lora \
+    --do_sample \
+    --temperature 1.2 \
+    --top_p 0.95
+```
+
+**Note**: If your model produces identical outputs with greedy decoding, try sampling to see if it generates different forecasts for different inputs. This helps diagnose whether the issue is deterministic decoding or model behavior.
 
 ---
 
@@ -290,6 +377,24 @@ python evaluate.py \
     --max_new_tokens 1024  # Shorter forecasts
 ```
 
+### 6. Try Sampling for Diverse Outputs
+If you're getting identical predictions, try sampling to see if the model produces different forecasts:
+
+```bash
+# Test with sampling
+python evaluate.py \
+    --test_csv ./manifests/manifest_test.csv \
+    --model_path ./checkpoints/weather_lora \
+    --do_sample \
+    --temperature 0.7 \
+    --top_p 0.9 \
+    --max_samples 10  # Quick test
+```
+
+This helps diagnose whether identical outputs are due to:
+- **Deterministic decoding** (fixed by using `--do_sample`)
+- **Model behavior** (model always generates same template regardless of input)
+
 ---
 
 ## Troubleshooting
@@ -465,12 +570,23 @@ After evaluation:
 
 ## Quick Reference
 
-### Evaluate Fine-Tuned Model
+### Evaluate Fine-Tuned Model (Greedy Decoding)
 ```bash
 python evaluate.py \
     --test_csv ./manifests/manifest_test.csv \
     --model_path ./checkpoints/weather_lora \
     --output_dir ./evaluation_results
+```
+
+### Evaluate with Sampling
+```bash
+python evaluate.py \
+    --test_csv ./manifests/manifest_test.csv \
+    --model_path ./checkpoints/weather_lora \
+    --output_dir ./evaluation_results \
+    --do_sample \
+    --temperature 0.7 \
+    --top_p 0.9
 ```
 
 ### Evaluate Base Model

@@ -8,12 +8,21 @@ This script evaluates a fine-tuned Qwen2.5-VL model on a test set by:
 4. Generating comparison reports
 
 Usage:
-    # Evaluate LoRA fine-tuned model
+    # Evaluate LoRA fine-tuned model (greedy decoding - deterministic)
     python evaluate.py \
         --test_csv ./manifests/manifest_test.csv \
         --model_path ./checkpoints/weather_lora \
         --output_dir ./evaluation_results \
         --batch_size 1
+
+    # Evaluate with sampling (for more diverse outputs)
+    python evaluate.py \
+        --test_csv ./manifests/manifest_test.csv \
+        --model_path ./checkpoints/weather_lora \
+        --output_dir ./evaluation_results \
+        --do_sample \
+        --temperature 0.7 \
+        --top_p 0.9
 
     # Evaluate base model (no fine-tuning)
     python evaluate.py \
@@ -121,12 +130,21 @@ class WeatherForecastEvaluator:
         self.model.eval()
         print(f"Model loaded on {self.device}")
 
-    def generate_forecast(self, images: List[Image.Image]) -> str:
+    def generate_forecast(
+        self, 
+        images: List[Image.Image],
+        do_sample: bool = False,
+        temperature: float = 1.0,
+        top_p: float = 1.0
+    ) -> str:
         """
         Generate forecast from multiple weather chart images.
 
         Args:
             images: List of 12 PIL Images (weather charts)
+            do_sample: If True, use sampling instead of greedy decoding
+            temperature: Sampling temperature (only used if do_sample=True)
+            top_p: Nucleus sampling parameter (only used if do_sample=True)
 
         Returns:
             Generated forecast text
@@ -170,11 +188,16 @@ class WeatherForecastEvaluator:
 
         # Generate forecast
         with torch.no_grad():
-            generated_ids = self.model.generate(
+            generate_kwargs = {
                 **inputs,
-                max_new_tokens=self.max_new_tokens,
-                do_sample=False,  # Deterministic
-            )
+                "max_new_tokens": self.max_new_tokens,
+                "do_sample": do_sample,
+            }
+            if do_sample:
+                generate_kwargs["temperature"] = temperature
+                generate_kwargs["top_p"] = top_p
+            
+            generated_ids = self.model.generate(**generate_kwargs)
 
         # Decode output
         generated_ids_trimmed = [
@@ -275,7 +298,10 @@ def evaluate(
     evaluator: WeatherForecastEvaluator,
     test_records: List[Dict[str, Any]],
     batch_size: int = 1,
-    max_samples: Optional[int] = None
+    max_samples: Optional[int] = None,
+    do_sample: bool = False,
+    temperature: float = 1.0,
+    top_p: float = 1.0
 ) -> Dict[str, Any]:
     """
     Evaluate model on test set.
@@ -285,6 +311,9 @@ def evaluate(
         test_records: List of test records
         batch_size: Batch size for inference (currently only 1 supported)
         max_samples: Maximum number of samples to evaluate (None = all)
+        do_sample: If True, use sampling instead of greedy decoding
+        temperature: Sampling temperature (only used if do_sample=True)
+        top_p: Nucleus sampling parameter (only used if do_sample=True)
 
     Returns:
         Dictionary with metrics and results
@@ -314,7 +343,12 @@ def evaluate(
         
         # Generate prediction
         try:
-            prediction = evaluator.generate_forecast(images)
+            prediction = evaluator.generate_forecast(
+                images,
+                do_sample=do_sample,
+                temperature=temperature,
+                top_p=top_p
+            )
         except Exception as e:
             print(f"Error generating forecast for sample {i}: {e}")
             prediction = ""
@@ -470,6 +504,23 @@ def main():
         default="cuda",
         help="Device to run inference on (cuda or cpu)"
     )
+    parser.add_argument(
+        "--do_sample",
+        action="store_true",
+        help="Use sampling instead of greedy decoding (enables temperature and top_p)"
+    )
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        default=0.7,
+        help="Sampling temperature (only used if --do_sample is set). Higher = more random. Default: 0.7"
+    )
+    parser.add_argument(
+        "--top_p",
+        type=float,
+        default=0.9,
+        help="Nucleus sampling parameter (only used if --do_sample is set). Default: 0.9"
+    )
     
     args = parser.parse_args()
     
@@ -491,7 +542,10 @@ def main():
         evaluator,
         test_records,
         batch_size=args.batch_size,
-        max_samples=args.max_samples
+        max_samples=args.max_samples,
+        do_sample=args.do_sample,
+        temperature=args.temperature,
+        top_p=args.top_p
     )
     
     # Save results
