@@ -51,7 +51,7 @@ python -u LoRA_Training.py \
     --train_csv "$TRAIN_CSV" \
     --eval_csv "$EVAL_CSV" \
     --output_dir "$OUTPUT_DIR" \
-    --image_size 256 \
+    --image_size 336 \
     --max_train_samples 100 \
     --max_eval_samples 20 \
     --num_train_epochs 3 \

@@ -589,10 +589,8 @@ def main():
         num_gpus = 0
         print("No CUDA GPUs available")
 
-    # Load model directly to GPU (don't use device_map="auto" which can offload to CPU)
-    # This is critical for training speed - device_map="auto" can offload model to CPU
     print(f"Loading model: {args.model_name}")
-    print("Loading model directly to GPU (not using device_map='auto' to avoid CPU offloading)...")
+    print(f"Using device_map='{args.device_map}' to distribute model across {num_gpus} GPUs")
     try:
         # Determine dtype: prefer bfloat16 for training (better than float16)
         if args.bf16:
@@ -602,20 +600,31 @@ def main():
         else:
             # Default to bfloat16 if available, otherwise float32
             model_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float32
-        
+
+        # Use device_map to distribute model across all available GPUs
+        # This spreads model layers across GPUs to handle large vision activations
+        device_map_strategy = args.device_map if num_gpus > 0 else None
+
         model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
             args.model_name,
             torch_dtype=model_dtype,
-            # Don't use device_map - load directly to GPU for full speed
+            device_map=device_map_strategy,  # Distribute model layers across all 4 GPUs
         )
-        
-        # Explicitly move to GPU
+
+        # Enable CUDA optimizations for faster training
         if torch.cuda.is_available():
-            model = model.to("cuda:0")
-            # Enable CUDA optimizations for faster training
             torch.backends.cudnn.benchmark = True
             torch.backends.cuda.matmul.allow_tf32 = True
-        
+
+        # Print device placement to verify multi-GPU distribution
+        if hasattr(model, 'hf_device_map'):
+            print("\nModel layer distribution across GPUs:")
+            device_counts = {}
+            for device in model.hf_device_map.values():
+                device_counts[device] = device_counts.get(device, 0) + 1
+            for device, count in sorted(device_counts.items()):
+                print(f"  {device}: {count} layers")
+
         # Clear cache after model loading
         torch.cuda.empty_cache()
     except Exception as e:
@@ -666,28 +675,13 @@ def main():
                 "update `peft`/`transformers` to a compatible version."
             )
         
-        # Verify model is fully on GPU after LoRA
+        # Report GPU memory usage across all GPUs after LoRA
         if torch.cuda.is_available():
-            all_params = list(model.parameters())
-            gpu_params = [p for p in all_params if p.device.type == "cuda"]
-            cpu_params = [p for p in all_params if p.device.type == "cpu"]
-            
-            allocated = torch.cuda.memory_allocated() / 1024**3
-            print(f"\nGPU Memory after LoRA: {allocated:.2f} GB allocated")
-            print(f"Parameters on GPU: {len(gpu_params)}/{len(all_params)}")
-            
-            if cpu_params:
-                print(f"WARNING: {len(cpu_params)} parameters are on CPU!")
-                print(f"Moving remaining parameters to GPU...")
-                model = model.to("cuda:0")
-                # Double-check: move all parameters explicitly
-                for param in model.parameters():
-                    if param.device.type != "cuda":
-                        param.data = param.data.to("cuda:0")
-                allocated_after = torch.cuda.memory_allocated() / 1024**3
-                print(f"After fix: {allocated_after:.2f} GB allocated")
-            else:
-                print(f"✓ All parameters are on GPU")
+            print(f"\nGPU Memory after LoRA:")
+            for i in range(num_gpus):
+                allocated = torch.cuda.memory_allocated(i) / 1024**3
+                reserved = torch.cuda.memory_reserved(i) / 1024**3
+                print(f"  GPU {i}: {allocated:.2f} GB allocated, {reserved:.2f} GB reserved")
         
         # Clear cache after LoRA
         torch.cuda.empty_cache()
@@ -753,28 +747,34 @@ def main():
         data_collator=data_collator,
     )
     
-    # Check available memory before training
+    # Check available memory before training (all GPUs)
     if torch.cuda.is_available():
-        allocated = torch.cuda.memory_allocated() / 1024**3  # GB
-        reserved = torch.cuda.memory_reserved() / 1024**3  # GB
-        total = torch.cuda.get_device_properties(0).total_memory / 1024**3  # GB
-        free = total - reserved
-        
         print(f"\n{'='*60}")
-        print(f"GPU Memory Analysis")
+        print(f"GPU Memory Analysis Before Training")
         print(f"{'='*60}")
-        print(f"Total GPU Memory (GPU 0): {total:.2f} GB")
-        print(f"Currently Reserved: {reserved:.2f} GB ({reserved/total*100:.1f}%)")
-        print(f"Currently Allocated: {allocated:.2f} GB")
-        print(f"Free Memory: {free:.2f} GB")
-        
-        # Warn if memory is very low
-        if free < 2.0:  # Less than 2GB free
-            print(f"WARNING: Very low GPU memory ({free:.2f} GB free).")
-        
+
+        for i in range(num_gpus):
+            allocated = torch.cuda.memory_allocated(i) / 1024**3  # GB
+            reserved = torch.cuda.memory_reserved(i) / 1024**3  # GB
+            total = torch.cuda.get_device_properties(i).total_memory / 1024**3  # GB
+            free = total - reserved
+
+            print(f"GPU {i}:")
+            print(f"  Total: {total:.2f} GB")
+            print(f"  Reserved: {reserved:.2f} GB ({reserved/total*100:.1f}%)")
+            print(f"  Allocated: {allocated:.2f} GB")
+            print(f"  Free: {free:.2f} GB")
+
+            # Warn if memory is very low on any GPU
+            if free < 2.0:  # Less than 2GB free
+                print(f"  WARNING: Very low GPU memory ({free:.2f} GB free)")
+
+        print(f"{'='*60}\n")
+
         # Clear cache before training
         torch.cuda.empty_cache()
-        torch.cuda.reset_peak_memory_stats()
+        for i in range(num_gpus):
+            torch.cuda.reset_peak_memory_stats(i)
     
     # Train with error handling
     try:
