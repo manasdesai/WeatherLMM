@@ -38,7 +38,6 @@ Usage:
 
 import os
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
-
 import argparse
 import json
 import csv
@@ -51,6 +50,7 @@ import torch
 from PIL import Image
 from transformers import AutoModelForVision2Seq, AutoProcessor
 from qwen_vl_utils import process_vision_info
+import torch.nn as nn
 
 try:
     from peft import PeftModel
@@ -64,6 +64,9 @@ try:
     from nltk.translate.meteor_score import meteor_score
     import nltk
     NLTK_AVAILABLE = True
+    os.environ["NLTK_DATA"] = "/fs/nexus-projects/study/nltk_data"
+
+    nltk.data.path.append(os.environ["NLTK_DATA"])
     # Download required NLTK data
     try:
         nltk.data.find('tokenizers/punkt')
@@ -84,6 +87,25 @@ except ImportError:
     ROUGE_AVAILABLE = False
     print("Warning: rouge-score not available. ROUGE metrics will be skipped.")
 
+class Adapter(nn.Module):
+    def __init__(self, hidden_size: int, adapter_dim: int = 256):
+        super().__init__()
+        self.down = nn.Linear(hidden_size, adapter_dim)
+        self.act = nn.GELU()
+        self.up = nn.Linear(adapter_dim, hidden_size)
+
+    def forward(self, hidden: torch.Tensor) -> torch.Tensor:
+        return self.up(self.act(self.down(hidden)))
+
+class WrappedLMHead(nn.Module):
+    def __init__(self, orig_lm_head: nn.Module, adapter: Adapter):
+        super().__init__()
+        self.orig = orig_lm_head
+        self.adapter = adapter
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        adapted = hidden_states + self.adapter(hidden_states)
+        return self.orig(adapted)
 
 class WeatherForecastEvaluator:
     """Evaluator for weather forecast generation models."""
@@ -163,8 +185,45 @@ class WeatherForecastEvaluator:
             trust_remote_code=True
         )
 
+        # 2. Reconstruct the Adapter Structure
+        if model_path:
+            print(f"Applying custom Adapter structure and loading weights from {model_path}...")
+            
+            # Infer hidden size exactly as you did in training
+            hidden_size = (getattr(self.model.config, 'd_model', None) or 
+                          getattr(self.model.config, 'hidden_size', None))
+            if hidden_size is None:
+                hidden_size = self.model.get_output_embeddings().in_features
+
+            # Recreate the adapter and the wrapper
+            adapter = Adapter(hidden_size=hidden_size, adapter_dim=256)
+            # 🔑 Match adapter dtype to model
+            adapter = adapter.to(dtype=self.model.dtype, device=self.device)
+            orig_lm = self.model.get_output_embeddings()
+            wrapped_lm = WrappedLMHead(orig_lm, adapter)
+            # 🔑 Ensure wrapped head is also BF16
+            wrapped_lm = wrapped_lm.to(dtype=self.model.dtype, device=self.device)
+            # Replace the head in the base model
+            self.model.set_output_embeddings(wrapped_lm)
+
+            # 3. Load the Saved Weights
+            # If you saved using trainer.save_model(), it saved the whole model 
+            # or the state_dict of the modified parts.
+            checkpoint_file = model_path
+            if not os.path.exists(checkpoint_file):
+                # Check for safetensors if that was used
+                checkpoint_file = os.path.join(model_path, "model.safetensors")
+
+            print(f"  Loading state dict from {checkpoint_file}")
+            state_dict = torch.load(checkpoint_file, map_location=self.device)
+            
+            # Use strict=False because the base model weights are already loaded;
+            # we mainly care about the adapter and the wrapped head weights.
+            msg = self.model.load_state_dict(state_dict, strict=False)
+            # print(f"  Load result: {msg}")
+
         # Load LoRA adapter if provided
-        if model_path and PEFT_AVAILABLE:
+        elif model_path and PEFT_AVAILABLE:
             print(f"Loading LoRA adapter from {model_path}...")
             # IMPORTANT: PeftModel.from_pretrained might use device_map internally
             # Explicitly disable it and ensure base model stays on GPU
@@ -182,6 +241,7 @@ class WeatherForecastEvaluator:
                     if param.device.type != "cuda":
                         param.data = param.data.to(self.device)
             print("LoRA adapter loaded")
+
         elif model_path and not PEFT_AVAILABLE:
             raise ImportError("PEFT required to load LoRA models. Install with: pip install peft")
 

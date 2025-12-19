@@ -260,6 +260,7 @@ def main():
 
         # Build adapter and wrap lm_head
         hidden_size = getattr(model.config, 'd_model', None) or getattr(model.config, 'hidden_size', None)
+        # print(f"hidden size is",hidden_size) #2048
         if hidden_size is None:
             # fallback: try to inspect lm_head weight
             try:
