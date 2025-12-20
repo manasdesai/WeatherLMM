@@ -185,65 +185,91 @@ class WeatherForecastEvaluator:
             trust_remote_code=True
         )
 
-        # 2. Reconstruct the Adapter Structure
+        # 2. Load fine-tuned checkpoint (LoRA or custom adapter)
         if model_path:
-            print(f"Applying custom Adapter structure and loading weights from {model_path}...")
-            
-            # Infer hidden size exactly as you did in training
-            hidden_size = (getattr(self.model.config, 'd_model', None) or 
-                          getattr(self.model.config, 'hidden_size', None))
-            if hidden_size is None:
-                hidden_size = self.model.get_output_embeddings().in_features
-
-            # Recreate the adapter and the wrapper
-            adapter = Adapter(hidden_size=hidden_size, adapter_dim=256)
-            # 🔑 Match adapter dtype to model
-            adapter = adapter.to(dtype=self.model.dtype, device=self.device)
-            orig_lm = self.model.get_output_embeddings()
-            wrapped_lm = WrappedLMHead(orig_lm, adapter)
-            # 🔑 Ensure wrapped head is also BF16
-            wrapped_lm = wrapped_lm.to(dtype=self.model.dtype, device=self.device)
-            # Replace the head in the base model
-            self.model.set_output_embeddings(wrapped_lm)
-
-            # 3. Load the Saved Weights
-            # If you saved using trainer.save_model(), it saved the whole model 
-            # or the state_dict of the modified parts.
-            checkpoint_file = model_path
-            if not os.path.exists(checkpoint_file):
-                # Check for safetensors if that was used
-                checkpoint_file = os.path.join(model_path, "model.safetensors")
-
-            print(f"  Loading state dict from {checkpoint_file}")
-            state_dict = torch.load(checkpoint_file, map_location=self.device)
-            
-            # Use strict=False because the base model weights are already loaded;
-            # we mainly care about the adapter and the wrapped head weights.
-            msg = self.model.load_state_dict(state_dict, strict=False)
-            # print(f"  Load result: {msg}")
-
-        # Load LoRA adapter if provided
-        elif model_path and PEFT_AVAILABLE:
-            print(f"Loading LoRA adapter from {model_path}...")
-            # IMPORTANT: PeftModel.from_pretrained might use device_map internally
-            # Explicitly disable it and ensure base model stays on GPU
-            self.model = PeftModel.from_pretrained(
-                self.model, 
-                model_path,
-                # Don't let PEFT use device_map which might offload to CPU
+            # Detect if this is a PEFT/LoRA checkpoint (directory with adapter_config.json)
+            is_peft_checkpoint = (
+                os.path.isdir(model_path) and 
+                os.path.exists(os.path.join(model_path, "adapter_config.json"))
             )
-            # Force entire model (base + LoRA) to GPU
-            if self.device == "cuda":
-                print("  Ensuring base model and LoRA adapter are on GPU...")
-                self.model = self.model.to(self.device)
-                # Double-check: move all parameters explicitly
-                for param in self.model.parameters():
-                    if param.device.type != "cuda":
-                        param.data = param.data.to(self.device)
-            print("LoRA adapter loaded")
+            
+            # Load LoRA adapter if provided
+            if is_peft_checkpoint and PEFT_AVAILABLE:
+                print(f"Loading LoRA adapter from {model_path}...")
+                # IMPORTANT: PeftModel.from_pretrained might use device_map internally
+                # Explicitly disable it and ensure base model stays on GPU
+                self.model = PeftModel.from_pretrained(
+                    self.model, 
+                    model_path,
+                    # Don't let PEFT use device_map which might offload to CPU
+                )
+                # Force entire model (base + LoRA) to GPU
+                if self.device == "cuda":
+                    print("  Ensuring base model and LoRA adapter are on GPU...")
+                    self.model = self.model.to(self.device)
+                    # Double-check: move all parameters explicitly
+                    for param in self.model.parameters():
+                        if param.device.type != "cuda":
+                            param.data = param.data.to(self.device)
+                print("LoRA adapter loaded")
+            
+            elif is_peft_checkpoint and not PEFT_AVAILABLE:
+                raise ImportError("PEFT required to load LoRA models. Install with: pip install peft")
+            
+            else:
+                # Load custom adapter (legacy format)
+                print(f"Applying custom Adapter structure and loading weights from {model_path}...")
+                
+                # Infer hidden size exactly as you did in training
+                hidden_size = (getattr(self.model.config, 'd_model', None) or 
+                              getattr(self.model.config, 'hidden_size', None))
+                if hidden_size is None:
+                    hidden_size = self.model.get_output_embeddings().in_features
 
-        elif model_path and not PEFT_AVAILABLE:
-            raise ImportError("PEFT required to load LoRA models. Install with: pip install peft")
+                # Recreate the adapter and the wrapper
+                adapter = Adapter(hidden_size=hidden_size, adapter_dim=256)
+                # 🔑 Match adapter dtype to model
+                adapter = adapter.to(dtype=self.model.dtype, device=self.device)
+                orig_lm = self.model.get_output_embeddings()
+                wrapped_lm = WrappedLMHead(orig_lm, adapter)
+                # 🔑 Ensure wrapped head is also BF16
+                wrapped_lm = wrapped_lm.to(dtype=self.model.dtype, device=self.device)
+                # Replace the head in the base model
+                self.model.set_output_embeddings(wrapped_lm)
+
+                # 3. Load the Saved Weights
+                # If you saved using trainer.save_model(), it saved the whole model 
+                # or the state_dict of the modified parts.
+                checkpoint_file = model_path
+                if os.path.isdir(checkpoint_file):
+                    # Check for common checkpoint file names in directory
+                    possible_files = ["model.safetensors", "pytorch_model.bin", "model.bin"]
+                    found = False
+                    for fname in possible_files:
+                        test_path = os.path.join(checkpoint_file, fname)
+                        if os.path.exists(test_path):
+                            checkpoint_file = test_path
+                            found = True
+                            break
+                    if not found:
+                        raise FileNotFoundError(
+                            f"Could not find checkpoint file in directory {model_path}. "
+                            f"Expected one of: {possible_files}"
+                        )
+                elif not os.path.exists(checkpoint_file):
+                    raise FileNotFoundError(f"Checkpoint file not found: {checkpoint_file}")
+
+                print(f"  Loading state dict from {checkpoint_file}")
+                if checkpoint_file.endswith('.safetensors'):
+                    from safetensors.torch import load_file
+                    state_dict = load_file(checkpoint_file)
+                else:
+                    state_dict = torch.load(checkpoint_file, map_location=self.device)
+                
+                # Use strict=False because the base model weights are already loaded;
+                # we mainly care about the adapter and the wrapped head weights.
+                msg = self.model.load_state_dict(state_dict, strict=False)
+                # print(f"  Load result: {msg}")
 
         self.model.eval()
         # Enable better memory efficiency
