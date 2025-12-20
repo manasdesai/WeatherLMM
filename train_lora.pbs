@@ -64,7 +64,9 @@ python -u LoRA_Training.py \
     --save_steps 400 \
     --save_total_limit 3 \
     --max_steps -1 \
-    --use_8bit_optimizer
+    --use_8bit_optimizer \
+    --resume_from_checkpoint "$OUTPUT_DIR/checkpoint-600"
+
 
 # Print completion information
 echo "=========================================="
