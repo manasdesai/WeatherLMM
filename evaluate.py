@@ -156,7 +156,25 @@ class WeatherForecastEvaluator:
         else:
             print(f"Running on CPU (no GPU detected)")
 
-        print(f"Loading model: {model_name}")
+        # Check if model_path is a PEFT checkpoint and get base model name
+        base_model_name = model_name
+        is_peft_checkpoint = False
+        if model_path and os.path.isdir(model_path):
+            adapter_config_path = os.path.join(model_path, "adapter_config.json")
+            if os.path.exists(adapter_config_path):
+                is_peft_checkpoint = True
+                # Read the base model name from adapter_config.json
+                try:
+                    with open(adapter_config_path, 'r') as f:
+                        adapter_config = json.load(f)
+                    if "base_model_name_or_path" in adapter_config:
+                        base_model_name = adapter_config["base_model_name_or_path"]
+                        print(f"Found base model in checkpoint config: {base_model_name}")
+                except Exception as e:
+                    print(f"Warning: Could not read adapter_config.json: {e}")
+                    print(f"  Using default model_name: {model_name}")
+
+        print(f"Loading model: {base_model_name}")
         if model_path:
             print(f"  Fine-tuned checkpoint: {model_path}")
 
@@ -166,7 +184,7 @@ class WeatherForecastEvaluator:
         if self.device == "cuda":
             print("Loading model directly to GPU (not using device_map='auto' to avoid CPU offloading)...")
             self.model = AutoModelForVision2Seq.from_pretrained(
-                model_name,
+                base_model_name,
                 torch_dtype=torch.bfloat16,
                 trust_remote_code=True,
             )
@@ -174,24 +192,19 @@ class WeatherForecastEvaluator:
             self.model = self.model.to(self.device)
         else:
             self.model = AutoModelForVision2Seq.from_pretrained(
-                model_name,
+                base_model_name,
                 torch_dtype=torch.float32,
                 trust_remote_code=True,
             )
             self.model = self.model.to(self.device)
 
         self.processor = AutoProcessor.from_pretrained(
-            model_name,
+            base_model_name,
             trust_remote_code=True
         )
 
         # 2. Load fine-tuned checkpoint (LoRA or custom adapter)
         if model_path:
-            # Detect if this is a PEFT/LoRA checkpoint (directory with adapter_config.json)
-            is_peft_checkpoint = (
-                os.path.isdir(model_path) and 
-                os.path.exists(os.path.join(model_path, "adapter_config.json"))
-            )
             
             # Load LoRA adapter if provided
             if is_peft_checkpoint and PEFT_AVAILABLE:
