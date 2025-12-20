@@ -522,6 +522,12 @@ def parse_args():
             "Use 'cuda:0' for single-GPU or data parallelism (model replicated on each GPU)."
         ),
     )
+    parser.add_argument(
+        "--resume_from_checkpoint",
+        type=str,
+        default=None,
+        help="Path to checkpoint to resume from (e.g., './output/checkpoint-600'). If None, starts from beginning.",
+    )
     return parser.parse_args()
 
 def main():
@@ -881,7 +887,7 @@ def main():
     
     # Train with error handling
     try:
-        trainer.train()
+        trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)
     except Exception as e:
         print(f"\nTraining failed with error: {e}")
         print(f"Partial checkpoints may be available in: {args.output_dir}")
